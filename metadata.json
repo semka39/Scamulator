@@ -1,0 +1,8 @@
+{
+  "name": "Remix Симулятор темщика pay",
+  "description": "Соревновательная платформа финансовых смарт-контрактов с Python-микроэкономикой, песочницей исполнения, управлением ликвидностью и динамической аналитикой рисков.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
