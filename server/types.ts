@@ -135,6 +135,52 @@ export interface Invoice {
   credited: boolean;
 }
 
+export interface PromoCode {
+  code: string;
+  amount: number;
+  maxActivations: number;
+  usedCount: number;
+  createdAt: string;
+}
+
+export interface PromoActivation {
+  id: string;
+  promoCode: string;
+  userId: string;
+  username: string;
+  amount: number;
+  activatedAt: string;
+}
+
+export type NotificationType =
+  | 'new_bet'
+  | 'temka_bankrupt'
+  | 'temka_closed'
+  | 'withdrawal_executed'
+  | 'new_comment'
+  | 'transfer_received';
+
+export interface NotificationSettings {
+  new_bet: boolean;
+  temka_bankrupt: boolean;
+  temka_closed: boolean;
+  withdrawal_executed: boolean;
+  new_comment: boolean;
+  transfer_received: boolean;
+}
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  temkaId?: string;
+  relatedUserId?: string;
+  isRead: boolean;
+  createdAt: string;
+}
+
 export interface DatabaseSchema {
   users: User[];
   temkas: Temka[];
@@ -145,4 +191,6 @@ export interface DatabaseSchema {
   sandboxLogs: SandboxLog[];
   transfers?: Transfer[];
   invoices?: Invoice[];
+  promoCodes?: PromoCode[];
+  promoActivations?: PromoActivation[];
 }

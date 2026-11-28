@@ -217,7 +217,7 @@ export interface BalanceHistoryItem {
   id: string;
   category: 'investments' | 'temkas' | 'transfers' | 'deposits';
   direction: 'income' | 'expense' | 'neutral';
-  type: 'transfer_in' | 'transfer_out' | 'deposit' | 'investment' | 'temka_create' | 'temka_topup' | 'temka_withdraw';
+  type: 'transfer_in' | 'transfer_out' | 'deposit' | 'investment' | 'temka_create' | 'temka_topup' | 'temka_withdraw' | 'promo_code';
   title: string;
   subtext?: string;
   amount?: number;
@@ -235,5 +235,61 @@ export interface BalanceHistoryItem {
   
   comment?: string;
   timestamp: string;
+}
+
+export interface PromoCode {
+  code: string;
+  amount: number;
+  maxActivations: number;
+  usedCount: number;
+  createdAt: string;
+}
+
+export interface PromoActivation {
+  id: string;
+  promoCode: string;
+  userId: string;
+  username: string;
+  amount: number;
+  activatedAt: string;
+}
+
+export type NotificationType =
+  | 'new_bet'
+  | 'temka_bankrupt'
+  | 'temka_closed'
+  | 'withdrawal_executed'
+  | 'new_comment'
+  | 'transfer_received';
+
+export interface NotificationSettings {
+  new_bet: boolean;
+  temka_bankrupt: boolean;
+  temka_closed: boolean;
+  withdrawal_executed: boolean;
+  new_comment: boolean;
+  transfer_received: boolean;
+}
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  temkaId?: string;
+  relatedUserId?: string;
+  isRead: boolean;
+  createdAt: string;
+}
+
+export interface TemkaClonePayload {
+  title: string;
+  description: string;
+  algorithmCode: string;
+  initialCapital: number;
+  collateral: number;
+  minBet: number;
+  maxBet: number;
 }
 

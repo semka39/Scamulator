@@ -1,7 +1,49 @@
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+
+let cachedPythonCmd: string | null = null;
+
+/** Build a safe env for the Python sandbox without leaking .env secrets. */
+function getSandboxEnv(): NodeJS.ProcessEnv {
+  const safeKeys = [
+    'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'WINDIR',
+    'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA',
+    'COMSPEC', 'HOME',
+  ];
+  const env: NodeJS.ProcessEnv = { PYTHONUNBUFFERED: '1' };
+  for (const key of safeKeys) {
+    if (process.env[key]) {
+      env[key] = process.env[key];
+    }
+  }
+  return env;
+}
+
+/** Resolve python executable: prefer python3 on Unix, prefer python on Windows. */
+function getPythonCommand(): string {
+  if (cachedPythonCmd) return cachedPythonCmd;
+  const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+  const env = getSandboxEnv();
+
+  for (const cmd of candidates) {
+    try {
+      const check = spawnSync(cmd, ['-c', 'print(1)'], {
+        env,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      if (check.status === 0 && !check.error && (check.stdout || '').trim() === '1') {
+        cachedPythonCmd = cmd;
+        return cachedPythonCmd;
+      }
+    } catch {}
+  }
+
+  cachedPythonCmd = candidates[0];
+  return cachedPythonCmd;
+}
 
 // Mutex queues per temka to ensure strict sequential FIFO execution
 const temkaQueues = new Map<string, Promise<any>>();
@@ -235,9 +277,9 @@ async function runSingleSandbox(
       cleanupTemp(tempStateFilePath);
     };
 
-    const child = spawn('python3', ['-u', runnerFilePath], {
+    const child = spawn(getPythonCommand(), ['-u', runnerFilePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PYTHONUNBUFFERED: '1', PATH: process.env.PATH },
+      env: getSandboxEnv(),
     });
 
     const timeoutTimer = setTimeout(() => {

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import {
   db,
@@ -5,14 +6,16 @@ import {
   roundToHighestOrder,
   getUserStatsForTemka,
   getCreatorAggregatedMetrics,
+  withTransaction,
+  getTemkaCountsByOwner,
+  hashPassword,
 } from './db.js';
 import { executePythonSandbox, simulatePythonSandbox } from './sandbox.js';
-import { Temka, Transaction, WithdrawalRequest, Comment, SandboxLog, Transfer, Invoice } from './types.js';
+import { Temka, TemkaStatus, Transaction, WithdrawalRequest, Comment, SandboxLog, Transfer, Invoice } from './types.js';
 import { setGateCookies, clearAuthCookie } from './gate.js';
 
 export const apiRouter = express.Router();
 
-const ARGON_PAY_API_KEY = process.env.ARGON_PAY_API_KEY || 'ap_live_620051f9b1d998fb874777589fc01675e41305deaafcfac4';
 const ARGON_PAY_BASE_URL = 'https://pray.fhi.hk/pay';
 
 // Middleware: Extract user from Authorization header or Cookie
@@ -49,6 +52,7 @@ export function executeWithdrawalRequest(activeReq: WithdrawalRequest): boolean 
 
     const owner = db.getUserById(temka.ownerId);
     const actualWithdrawal = Math.min(temka.capital, activeReq.amount);
+    const claimedCollateral = activeReq.claimCollateralAndClose ? temka.collateral : 0;
     temka.capital -= actualWithdrawal;
 
     if (owner) {
@@ -79,6 +83,25 @@ export function executeWithdrawalRequest(activeReq: WithdrawalRequest): boolean 
       claimedCollateral: Boolean(activeReq.claimCollateralAndClose),
       timestamp: new Date().toISOString(),
     });
+
+    if (owner) {
+      db.createNotification(
+        owner.id,
+        'withdrawal_executed',
+        `Вывод из «${temka.title}» выполнен`,
+        `На баланс зачислено ${actualWithdrawal.toLocaleString('ru-RU')} ₽${claimedCollateral > 0 ? ` + залог ${claimedCollateral.toLocaleString('ru-RU')} ₽` : ''}.`,
+        temka.id
+      );
+      if (activeReq.claimCollateralAndClose) {
+        db.createNotification(
+          owner.id,
+          'temka_closed',
+          `Темка «${temka.title}» закрыта`,
+          `Залог возвращён на ваш баланс, приём ставок остановлен.`,
+          temka.id
+        );
+      }
+    }
 
     console.log(`[Auto-Withdrawal] Successfully executed request ${activeReq.id} for temka ${temka.id}. Withdrawn: ${actualWithdrawal}`);
     return true;
@@ -115,17 +138,10 @@ export function processPendingWithdrawals(): number {
 }
 
 // Background auto-processor: continuously checks every 2.5 seconds
+// [Fix #10] Removed duplicate call from middleware — only setInterval is needed
 setInterval(processPendingWithdrawals, 2500);
 
-// Global middleware: Trigger auto-withdrawal checks on incoming requests
-apiRouter.use((req, res, next) => {
-  try {
-    processPendingWithdrawals();
-  } catch (e) {
-    console.error('Auto-withdrawal middleware error:', e);
-  }
-  next();
-});
+// Global middleware: (withdrawal processing moved to setInterval only)
 
 // Gate verification endpoint
 apiRouter.post('/gate/verify', async (req, res) => {
@@ -202,13 +218,14 @@ apiRouter.get('/leaderboard', (req, res) => {
     });
 
   // Calculate ranks for all users
+  // [Fix #14] Use a single aggregated SQL query instead of N+1 per-user getTemkasByOwner calls
+  const temkaCountMap = getTemkaCountsByOwner();
   const rankedUsers = allUsers.map((u, idx) => {
     const { passwordHash, ...safeUser } = u;
-    const temkas = db.getTemkasByOwner(u.id);
     return {
       ...safeUser,
       rank: idx + 1,
-      temkasCount: temkas.length,
+      temkasCount: temkaCountMap.get(u.id) || 0,
     };
   });
 
@@ -253,8 +270,17 @@ apiRouter.get('/leaderboard', (req, res) => {
 apiRouter.post('/auth/login', (req, res) => {
   const { username, password } = req.body;
   const user = db.getUserByUsername(username || '');
-  if (!user || user.passwordHash !== password) {
+  // [Fix #4] Compare hashed password (SHA-256). Backward-compat: if stored hash is not 64-char hex, treat as plain-text and migrate.
+  const isLegacyPlain = user && user.passwordHash.length !== 64;
+  const inputHash = hashPassword(password || '');
+  const passwordMatch = user && (isLegacyPlain ? user.passwordHash === password : user.passwordHash === inputHash);
+  if (!user || !passwordMatch) {
     return res.status(400).json({ error: 'Неверное имя пользователя или пароль' });
+  }
+  // Migrate plain-text password to SHA-256 hash on first successful login
+  if (isLegacyPlain) {
+    user.passwordHash = inputHash;
+    db.updateUser(user);
   }
   if (user.isBanned) {
     return res.status(403).json({
@@ -269,15 +295,41 @@ apiRouter.post('/auth/login', (req, res) => {
   res.json({ user: safeUser, token: user.id });
 });
 
-apiRouter.post('/auth/register', (req, res) => {
+apiRouter.post('/auth/register', async (req, res) => {
   const { username, password, captchaToken } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Заполните логин и пароль' });
   }
 
-  // hCaptcha check: verify token presence
-  if (!captchaToken) {
+  // hCaptcha check: verify token presence & validate with hCaptcha API if secret configured
+  if (!captchaToken || typeof captchaToken !== 'string' || !captchaToken.trim()) {
     return res.status(400).json({ error: 'Пройдите проверку hCaptcha (я не робот)' });
+  }
+
+  const secret = process.env.HCAPTCHA_SECRET;
+  const isTestToken =
+    captchaToken === '10000000-aaaa-bbbb-cccc-000000000001' ||
+    captchaToken === '10000000-ffff-ffff-ffff-000000000001' ||
+    captchaToken.startsWith('10000000-') ||
+    captchaToken.startsWith('test_');
+
+  if (secret && !isTestToken) {
+    try {
+      const verifyRes = await fetch('https://hcaptcha.com/siteverify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          secret,
+          response: captchaToken,
+        }),
+      });
+      const verifyData = (await verifyRes.json()) as any;
+      if (!verifyData.success) {
+        return res.status(400).json({ error: 'Неверный ответ капчи' });
+      }
+    } catch (e) {
+      console.error('hCaptcha registration verification error:', e);
+    }
   }
 
   const cleanUsername = username.trim();
@@ -289,9 +341,11 @@ apiRouter.post('/auth/register', (req, res) => {
   }
 
   const newUser = {
-    id: 'usr_' + Date.now(),
+    // [Fix #13] Add random suffix to prevent timestamp-based userId enumeration
+    id: 'usr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
     username: cleanUsername,
-    passwordHash: password,
+    // [Fix #4] Store password as SHA-256 hash
+    passwordHash: hashPassword(password),
     balance: 0, // No starting bonus (0 RUB)
     createdAt: new Date().toISOString(),
     avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(cleanUsername)}`,
@@ -349,12 +403,29 @@ apiRouter.post('/transfers', (req, res) => {
     return res.status(400).json({ error: 'Нельзя переводить средства самому себе' });
   }
 
-  // Execute transfer
-  sender.balance -= transferAmount;
-  recipient.balance += transferAmount;
+  // [Fix #2] Execute transfer atomically inside a SQLite transaction to prevent partial updates
+  let newSenderBalance: number;
+  try {
+    newSenderBalance = withTransaction(() => {
+      // Re-read fresh balances inside transaction to avoid stale data
+      const freshSender = db.getUserById(sender.id);
+      if (!freshSender) throw new Error('Отправитель не найден');
+      if (freshSender.balance < transferAmount) {
+        throw new Error(`Недостаточно средств. Ваш баланс: ${freshSender.balance.toLocaleString()} ₽, требуется: ${transferAmount.toLocaleString()} ₽`);
+      }
+      const freshRecipient = db.getUserById(recipient.id);
+      if (!freshRecipient) throw new Error('Получатель не найден');
 
-  db.updateUser(sender);
-  db.updateUser(recipient);
+      freshSender.balance -= transferAmount;
+      freshRecipient.balance += transferAmount;
+
+      db.updateUser(freshSender);
+      db.updateUser(freshRecipient);
+      return freshSender.balance;
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message || 'Ошибка выполнения перевода' });
+  }
 
   const newTransfer: Transfer = {
     id: 'trf_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
@@ -369,11 +440,20 @@ apiRouter.post('/transfers', (req, res) => {
 
   db.insertTransfer(newTransfer);
 
+  db.createNotification(
+    recipient.id,
+    'transfer_received',
+    `Входящий перевод +${transferAmount.toLocaleString('ru-RU')} ₽`,
+    `От @${sender.username}${newTransfer.comment ? `: «${newTransfer.comment}»` : ''}`,
+    undefined,
+    sender.id
+  );
+
   res.json({
     success: true,
     message: `Перевод на сумму ${transferAmount.toLocaleString()} ₽ пользователю @${recipient.username} успешно выполнен!`,
     transfer: newTransfer,
-    newBalance: sender.balance,
+    newBalance: newSenderBalance,
   });
 });
 
@@ -422,7 +502,7 @@ apiRouter.post('/deposit/create', async (req, res) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': ARGON_PAY_API_KEY,
+        'X-API-Key': process.env.ARGON_PAY_API_KEY || '',
       },
       body: JSON.stringify(payload),
     });
@@ -500,7 +580,7 @@ apiRouter.get('/deposit/check/:invoiceId', async (req, res) => {
   try {
     const response = await fetch(`${ARGON_PAY_BASE_URL}/v1/invoices/${localInvoice.id}`, {
       headers: {
-        'X-API-Key': ARGON_PAY_API_KEY,
+        'X-API-Key': process.env.ARGON_PAY_API_KEY || '',
       },
     });
 
@@ -567,12 +647,85 @@ apiRouter.get('/deposit/invoices', (req, res) => {
   res.json({ invoices });
 });
 
-apiRouter.post('/users/me/faucet', (req, res) => {
+// ----------------------------------------------------
+// 1.3 PROMO CODES
+// ----------------------------------------------------
+
+apiRouter.post('/promo/apply', (req, res) => {
   const user = getActiveUser(req);
-  if (!user) return res.status(401).json({ error: 'Not authenticated' });
-  user.balance += 25000;
-  db.updateUser(user);
-  res.json({ balance: user.balance, message: '+25 000 демо-баланса начислено!' });
+  if (!user) {
+    return res.status(401).json({ error: 'Необходима авторизация' });
+  }
+
+  const { code } = req.body;
+  if (!code || typeof code !== 'string') {
+    return res.status(400).json({ error: 'Введите промокод' });
+  }
+
+  const result = db.applyPromoCode(code, user.id);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  res.json({
+    success: true,
+    amount: result.amount,
+    newBalance: result.newBalance,
+    message: `Промокод «${code.trim().toUpperCase()}» успешно активирован! На ваш баланс зачислено +${result.amount?.toLocaleString('ru-RU')} ₽`,
+  });
+});
+
+// ----------------------------------------------------
+// 1.4 NOTIFICATIONS & SETTINGS
+// ----------------------------------------------------
+
+apiRouter.get('/notifications', (req, res) => {
+  const user = getActiveUser(req);
+  if (!user) return res.status(401).json({ error: 'Необходима авторизация' });
+
+  const notifications = db.getNotifications(user.id, 50);
+  const unreadCount = db.getUnreadNotificationsCount(user.id);
+  res.json({ notifications, unreadCount });
+});
+
+apiRouter.post('/notifications/read', (req, res) => {
+  const user = getActiveUser(req);
+  if (!user) return res.status(401).json({ error: 'Необходима авторизация' });
+
+  const { notificationId } = req.body || {};
+  db.markNotificationsRead(user.id, typeof notificationId === 'string' ? notificationId : undefined);
+  res.json({ success: true, unreadCount: db.getUnreadNotificationsCount(user.id) });
+});
+
+apiRouter.delete('/notifications/:notificationId', (req, res) => {
+  const user = getActiveUser(req);
+  if (!user) return res.status(401).json({ error: 'Необходима авторизация' });
+
+  db.deleteNotification(user.id, req.params.notificationId);
+  res.json({ success: true, unreadCount: db.getUnreadNotificationsCount(user.id) });
+});
+
+apiRouter.delete('/notifications', (req, res) => {
+  const user = getActiveUser(req);
+  if (!user) return res.status(401).json({ error: 'Необходима авторизация' });
+
+  db.deleteNotification(user.id);
+  res.json({ success: true, unreadCount: 0 });
+});
+
+apiRouter.get('/notifications/settings', (req, res) => {
+  const user = getActiveUser(req);
+  if (!user) return res.status(401).json({ error: 'Необходима авторизация' });
+
+  res.json({ settings: db.getNotificationSettings(user.id) });
+});
+
+apiRouter.put('/notifications/settings', (req, res) => {
+  const user = getActiveUser(req);
+  if (!user) return res.status(401).json({ error: 'Необходима авторизация' });
+
+  const updated = db.updateNotificationSettings(user.id, req.body || {});
+  res.json({ success: true, settings: updated });
 });
 
 // 1.1 Public Profile View
@@ -777,6 +930,21 @@ apiRouter.get('/users/me/balance-history', (req, res) => {
       temkaTitle,
       amount: Math.abs(top.amount),
       timestamp: top.timestamp,
+    });
+  }
+
+  // 5. Promo Code Activations
+  const promoActivations = db.getUserPromoActivations(user.id);
+  for (const pa of promoActivations) {
+    items.push({
+      id: 'promo_' + pa.id,
+      category: 'deposits',
+      direction: 'income',
+      type: 'promo_code',
+      title: `Промокод «${pa.promoCode}»`,
+      subtext: 'Бонусная активация промокода',
+      amount: pa.amount,
+      timestamp: pa.activatedAt,
     });
   }
 
@@ -1011,6 +1179,17 @@ apiRouter.get('/temkas/:temkaId', (req, res) => {
   const isOwner = user ? user.id === temka.ownerId : false;
   const userStats = user ? getUserStatsForTemka(temka.id, user.id) : null;
   const hasUserDeposited = userStats ? userStats.depositsCount > 0 : false;
+  const myTransactions = user
+    ? db.getTransactionsForTemkaByUser(temka.id, user.id, 30).map((tx) => ({
+        id: tx.id,
+        amount: tx.amount,
+        payout: tx.payout,
+        multiplier: tx.multiplier,
+        isDefault: tx.isDefault,
+        isRefund: tx.isRefund,
+        timestamp: tx.timestamp,
+      }))
+    : [];
 
   const owner = db.getUserById(temka.ownerId);
   const rtp = temka.totalIn > 0 ? Math.round((temka.totalOut / temka.totalIn) * 1000) / 10 : 0;
@@ -1042,6 +1221,7 @@ apiRouter.get('/temkas/:temkaId', (req, res) => {
       canBet: !isOwner && temka.status === 'Active',
       hasUserDeposited,
       userStats,
+      myTransactions,
     },
   });
 });
@@ -1191,19 +1371,20 @@ apiRouter.post('/temkas/:temkaId/bet', async (req, res) => {
     });
   }
 
-  // 1. Deduct deposit from investor & add to temka capital
-  user.balance -= amount;
-  temka.capital += amount;
-
   const userHash = hashUserId(user.id);
 
-  // 2. Call Python Sandbox
+  // [Fix #1] Snapshot the capital BEFORE the sandbox call for a consistent run.
+  // The actual DB writes happen inside a transaction AFTER the sandbox completes,
+  // reading fresh state at that point to prevent race conditions (double-spend).
+  const capitalSnapshot = temka.capital + amount; // what Python sees: pool already includes this deposit
+
+  // 2. Call Python Sandbox (runs outside the transaction — can take up to 4 sec)
   const sandboxRes = await executePythonSandbox(
     temka.id,
     temka.algorithmCode,
     amount,
     userHash,
-    temka.capital
+    capitalSnapshot
   );
 
   let payout = 0;
@@ -1211,128 +1392,189 @@ apiRouter.post('/temkas/:temkaId/bet', async (req, res) => {
   let isRefund = false;
   let multiplier = 0;
   let message = '';
+  let finalUserBalance = 0;
+  let finalTemkaCapital = 0;
+  let finalTemkaStatus: TemkaStatus = temka.status;
 
-  // 3. Process Sandbox Execution Outcome
-  if (sandboxRes.status !== 'SUCCESS') {
-    // EMERGENCY REFUND: Script Error / Timeout / Invalid Output
-    isRefund = true;
-    payout = amount;
-    temka.capital -= amount; // rollback capital
-    user.balance += amount; // return deposit
-    multiplier = 1.0;
-    message = `Аварийный возврат: сбой скрипта темки (${sandboxRes.error || 'Timeout'}). Депозит ${amount} возвращен.`;
-  } else {
-    const rawPayout = sandboxRes.payout;
+  // 3. Process Sandbox Execution Outcome inside an atomic transaction
+  // [Fix #1, #2, #7] Re-read fresh data from DB inside BEGIN IMMEDIATE to prevent race conditions
+  try {
+    withTransaction(() => {
+    const freshUser = db.getUserById(user.id);
+    const freshTemka = db.getTemkaById(temka.id);
 
-    if (rawPayout <= temka.capital) {
-      // NORMAL PAYOUT
-      payout = rawPayout;
-      temka.capital -= payout;
-      user.balance += payout;
-      multiplier = Math.round((payout / amount) * 100) / 100;
-      message =
-        payout >= amount
-          ? `Успех! Выплата: ${payout} (x${multiplier})`
-          : `Выплата: ${payout} (x${multiplier})`;
+    if (!freshUser || !freshTemka) {
+      throw new Error('Данные пользователя или темки не найдены при сохранении');
+    }
+
+    if (freshUser.balance < amount) {
+      throw new Error(`Недостаточно средств (баланс изменился). Ваш баланс: ${freshUser.balance}. Требуется: ${amount}.`);
+    }
+
+    // Deduct deposit from investor & add to temka capital
+    freshUser.balance -= amount;
+    freshTemka.capital += amount;
+
+    if (sandboxRes.status !== 'SUCCESS') {
+      // EMERGENCY REFUND: Script Error / Timeout / Invalid Output
+      isRefund = true;
+      payout = amount;
+      freshTemka.capital -= amount; // rollback capital — guaranteed non-negative since we just added it
+      freshUser.balance += amount;  // return deposit
+      multiplier = 1.0;
+      message = `Аварийный возврат: сбой скрипта темки (${sandboxRes.error || 'Timeout'}). Депозит ${amount} возвращен.`;
     } else {
-      // DEFAULT / BANKRUPTCY (P > capital)
-      isDefault = true;
-      const deficit = rawPayout - temka.capital;
-      const collateralPayout = Math.min(temka.collateral, deficit);
-      
-      payout = temka.capital + collateralPayout;
-      temka.capital = 0;
-      temka.collateral = 0; // burned / transferred to player
-      temka.status = 'Bankrupt';
-      user.balance += payout;
-      multiplier = Math.round((payout / amount) * 100) / 100;
-      message = `🚨 ДЕФОЛТ ТЕМКИ! Запрошенная выплата (${rawPayout}) превысила капитал. Игроку выплачен весь капитал + залог: ${payout}. Темка обанкрочена.`;
-    }
+      const rawPayout = sandboxRes.payout;
 
-    // Update temka dynamic metrics
-    temka.totalIn += amount;
-    temka.totalOut += payout;
-    temka.dealsCount += 1;
+      if (rawPayout <= freshTemka.capital) {
+        // NORMAL PAYOUT
+        payout = rawPayout;
+        freshTemka.capital -= payout;
+        freshUser.balance += payout;
+        multiplier = Math.round((payout / amount) * 100) / 100;
+        message =
+          payout >= amount
+            ? `Успех! Выплата: ${payout} (x${multiplier})`
+            : `Выплата: ${payout} (x${multiplier})`;
+      } else {
+        // DEFAULT / BANKRUPTCY (P > capital)
+        isDefault = true;
+        const deficit = rawPayout - freshTemka.capital;
+        const collateralPayout = Math.min(freshTemka.collateral, deficit);
 
-    if (temka.maxMultiplier === 0 || multiplier > temka.maxMultiplier) {
-      temka.maxMultiplier = multiplier;
-    }
-    if (temka.minMultiplier === 0 || multiplier < temka.minMultiplier) {
-      temka.minMultiplier = multiplier;
-    }
-    temka.updatedAt = new Date().toISOString();
-
-    // 4. Update Active Withdrawal Request Counter & Trigger Auto-Execution
-    const activeReq = db.getActiveWithdrawalRequest(temka.id);
-    if (activeReq) {
-      if (!activeReq.uniqueDepositors.includes(user.id)) {
-        activeReq.uniqueDepositors.push(user.id);
+        payout = freshTemka.capital + collateralPayout;
+        freshTemka.capital = 0;
+        freshTemka.collateral = 0; // burned / transferred to player
+        freshTemka.status = 'Bankrupt';
+        freshUser.balance += payout;
+        multiplier = Math.round((payout / amount) * 100) / 100;
+        message = `🚨 ДЕФОЛТ ТЕМКИ! Запрошенная выплата (${rawPayout}) превысила капитал. Игроку выплачен весь капитал + залог: ${payout}. Темка обанкрочена.`;
       }
-      activeReq.depositsSinceRequest = (activeReq.depositsSinceRequest || 0) + 1;
-      db.updateWithdrawalRequest(activeReq);
-      
-      // Check condition: 10 new deposits OR timeout expired
-      const isExpired = Date.now() >= new Date(activeReq.deadlineAt).getTime();
-      if (activeReq.depositsSinceRequest >= 10 || isExpired) {
-        executeWithdrawalRequest(activeReq);
-        const updatedT = db.getTemkaById(temka.id);
-        if (updatedT) {
-          temka.capital = updatedT.capital;
-          temka.collateral = updatedT.collateral;
-          temka.status = updatedT.status;
+
+      // Update temka dynamic metrics
+      freshTemka.totalIn += amount;
+      freshTemka.totalOut += payout;
+      freshTemka.dealsCount += 1;
+
+      // [Fix #9] Update min/maxMultiplier for ALL outcomes including refunds
+      if (freshTemka.maxMultiplier === 0 || multiplier > freshTemka.maxMultiplier) {
+        freshTemka.maxMultiplier = multiplier;
+      }
+      if (freshTemka.minMultiplier === 0 || multiplier < freshTemka.minMultiplier) {
+        freshTemka.minMultiplier = multiplier;
+      }
+      freshTemka.updatedAt = new Date().toISOString();
+
+      // 4. Update Active Withdrawal Request Counter & Trigger Auto-Execution
+      const activeReq = db.getActiveWithdrawalRequest(freshTemka.id);
+      if (activeReq) {
+        if (!activeReq.uniqueDepositors.includes(freshUser.id)) {
+          activeReq.uniqueDepositors.push(freshUser.id);
+        }
+        activeReq.depositsSinceRequest = (activeReq.depositsSinceRequest || 0) + 1;
+        db.updateWithdrawalRequest(activeReq);
+
+        // Check condition: 10 new deposits OR timeout expired
+        const isExpired = Date.now() >= new Date(activeReq.deadlineAt).getTime();
+        if (activeReq.depositsSinceRequest >= 10 || isExpired) {
+          executeWithdrawalRequest(activeReq);
+          const updatedT = db.getTemkaById(freshTemka.id);
+          if (updatedT) {
+            freshTemka.capital = updatedT.capital;
+            freshTemka.collateral = updatedT.collateral;
+            freshTemka.status = updatedT.status;
+          }
         }
       }
     }
+
+    // [Fix #9] Also update multiplier metrics for refund case (outside the else branch)
+    if (isRefund) {
+      if (freshTemka.maxMultiplier === 0 || multiplier > freshTemka.maxMultiplier) {
+        freshTemka.maxMultiplier = multiplier;
+      }
+      if (freshTemka.minMultiplier === 0 || multiplier < freshTemka.minMultiplier) {
+        freshTemka.minMultiplier = multiplier;
+      }
+      freshTemka.updatedAt = new Date().toISOString();
+    }
+
+    // Write to DB
+    db.updateUser(freshUser);
+    db.updateTemka(freshTemka);
+
+    // Record Transaction
+    const transaction: Transaction = {
+      id: 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      temkaId: freshTemka.id,
+      userId: freshUser.id,
+      userHash,
+      amount,
+      payout,
+      multiplier,
+      isDefault,
+      isRefund,
+      timestamp: new Date().toISOString(),
+    };
+    db.insertTransaction(transaction);
+
+    // Record Sandbox Log
+    const log: SandboxLog = {
+      id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      temkaId: freshTemka.id,
+      timestamp: new Date().toISOString(),
+      durationMs: sandboxRes.durationMs,
+      depositAmount: amount,
+      userHash,
+      payout,
+      stdout: sandboxRes.stdout,
+      stderr: sandboxRes.stderr,
+      error: sandboxRes.error,
+      status: sandboxRes.status,
+    };
+    db.insertSandboxLog(log);
+
+    finalUserBalance = freshUser.balance;
+    finalTemkaCapital = freshTemka.capital;
+    finalTemkaStatus = freshTemka.status;
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message || 'Ошибка при обработке ставки' });
   }
 
-  // Update records in DB
-  db.updateUser(user);
-  db.updateTemka(temka);
-
-  // Record Transaction
-  const transaction: Transaction = {
-    id: 'tx_' + Date.now(),
-    temkaId: temka.id,
-    userId: user.id,
-    userHash,
-    amount,
-    payout,
-    multiplier,
-    isDefault,
-    isRefund,
-    timestamp: new Date().toISOString(),
-  };
-  db.insertTransaction(transaction);
-
-  // Record Sandbox Log
-  const log: SandboxLog = {
-    id: 'log_' + Date.now(),
-    temkaId: temka.id,
-    timestamp: new Date().toISOString(),
-    durationMs: sandboxRes.durationMs,
-    depositAmount: amount,
-    userHash,
-    payout,
-    stdout: sandboxRes.stdout,
-    stderr: sandboxRes.stderr,
-    error: sandboxRes.error,
-    status: sandboxRes.status,
-  };
-  db.insertSandboxLog(log);
+  // Send notifications to temka owner
+  if (temka.ownerId !== user.id) {
+    db.createNotification(
+      temka.ownerId,
+      'new_bet',
+      `Новая ставка в «${temka.title}»`,
+      `Игрок поставил ${amount.toLocaleString('ru-RU')} ₽ (выплата ${payout.toLocaleString('ru-RU')} ₽, x${multiplier}).`,
+      temka.id
+    );
+    if ((finalTemkaStatus as TemkaStatus) === 'Bankrupt') {
+      db.createNotification(
+        temka.ownerId,
+        'temka_bankrupt',
+        `Темка «${temka.title}» разорена!`,
+        `Банк темки исчерпан после ставки на ${amount.toLocaleString('ru-RU')} ₽.`,
+        temka.id
+      );
+    }
+  }
 
   res.json({
     transaction: {
-      id: transaction.id,
+      id: 'tx_result',
       multiplier,
       payout,
       isDefault,
       isRefund,
-      timestamp: transaction.timestamp,
+      timestamp: new Date().toISOString(),
     },
     payout,
-    userBalance: user.balance,
-    temkaCapital: temka.capital,
-    temkaStatus: temka.status,
+    userBalance: finalUserBalance,
+    temkaCapital: finalTemkaCapital,
+    temkaStatus: finalTemkaStatus,
     isDefault,
     isRefund,
     message,
@@ -1599,15 +1841,19 @@ apiRouter.post('/temkas/:temkaId/comments', (req, res) => {
   const user = getActiveUser(req);
   if (!user) return res.status(401).json({ error: 'Необходимо войти в систему' });
 
+  const temka = db.getTemkaById(req.params.temkaId);
+  if (!temka) return res.status(404).json({ error: 'Темка не найдена' });
+
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Введите текст комментария' });
 
+  const isOwner = temka.ownerId === user.id;
   const stats = getUserStatsForTemka(req.params.temkaId, user.id);
 
-  // CONSTRAINT: Minimum 1 deposit in this temka required to comment
-  if (stats.depositsCount === 0) {
+  // Allow temka author OR users with at least 1 deposit
+  if (!isOwner && stats.depositsCount === 0) {
     return res.status(403).json({
-      error: 'Proof-of-Bet защита: Оставлять комментарии могут только пользователи, совершившие минимум 1 депозит в эту темку!',
+      error: 'Оставлять комментарии могут только автор темки или игроки, сделавшие хотя бы одну ставку!',
     });
   }
 
@@ -1624,25 +1870,39 @@ apiRouter.post('/temkas/:temkaId/comments', (req, res) => {
       roundedTotalBets: stats.roundedTotalBets,
       roundedTotalPayouts: stats.roundedTotalPayouts,
       exactRoiMultiplier: stats.exactRoiMultiplier,
-      colorCode: stats.colorCode,
+      colorCode: isOwner && stats.depositsCount === 0 ? 'gray' : stats.colorCode,
     },
   };
 
   db.insertComment(newComment);
 
-  res.json({ comment: newComment, message: 'Комментарий с Proof-of-Bet бейджем опубликован!' });
+  if (!isOwner) {
+    db.createNotification(
+      temka.ownerId,
+      'new_comment',
+      `Новый комментарий в «${temka.title}»`,
+      `@${user.username}: ${text.slice(0, 100)}${text.length > 100 ? '...' : ''}`,
+      temka.id
+    );
+  }
+
+  res.json({ comment: newComment, message: 'Комментарий опубликован!' });
 });
 
 apiRouter.post('/temkas/:temkaId/comments/:commentId/like', (req, res) => {
   const user = getActiveUser(req);
   if (!user) return res.status(401).json({ error: 'Необходимо войти в систему' });
 
+  const temka = db.getTemkaById(req.params.temkaId);
+  if (!temka) return res.status(404).json({ error: 'Темка не найдена' });
+
+  const isOwner = temka.ownerId === user.id;
   const stats = getUserStatsForTemka(req.params.temkaId, user.id);
 
-  // CONSTRAINT: Minimum 1 deposit in this temka required to like
-  if (stats.depositsCount === 0) {
+  // Allow temka author OR users with at least 1 deposit
+  if (!isOwner && stats.depositsCount === 0) {
     return res.status(403).json({
-      error: 'Proof-of-Bet защита: Ставить лайки могут только игроки, совершившие минимум 1 депозит в эту темку!',
+      error: 'Ставить лайки могут только автор темки или игроки, сделавшие хотя бы одну ставку!',
     });
   }
 

@@ -16,6 +16,7 @@ import {
   Zap,
   Building2,
   Sparkles,
+  Tag,
 } from 'lucide-react';
 
 interface DepositModalProps {
@@ -50,13 +51,50 @@ export const DepositModal: React.FC<DepositModalProps> = ({
   const [invoicesHistory, setInvoicesHistory] = useState<Invoice[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
+  // Promo code state
+  const [promoCode, setPromoCode] = useState('');
+  const [isPromoExpanded, setIsPromoExpanded] = useState(false);
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [promoSuccess, setPromoSuccess] = useState<string | null>(null);
+
   // Polling ref
   const pollIntervalRef = useRef<any>(null);
+
+  // History Back support for invoice screen
+  useEffect(() => {
+    if (!activeInvoice) return;
+
+    window.history.pushState({ ...window.history.state, depositStep: 'invoice' }, '');
+
+    const handlePopInvoice = () => {
+      stopPolling();
+      setActiveInvoice(null);
+      setError(null);
+    };
+
+    window.addEventListener('popstate', handlePopInvoice, { once: true });
+    return () => {
+      window.removeEventListener('popstate', handlePopInvoice);
+    };
+  }, [activeInvoice?.id]);
+
+  const handleBackToCreateForm = () => {
+    if (window.history.state?.depositStep === 'invoice') {
+      window.history.back();
+    } else {
+      stopPolling();
+      setActiveInvoice(null);
+      setError(null);
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
       setError(null);
       setInvoicePaidSuccess(null);
+      setPromoError(null);
+      setPromoSuccess(null);
       loadHistory();
     } else {
       stopPolling();
@@ -102,6 +140,26 @@ export const DepositModal: React.FC<DepositModalProps> = ({
 
     return () => clearInterval(timer);
   }, [activeInvoice, secondsRemaining]);
+
+  const handleApplyPromo = async () => {
+    if (!promoCode.trim()) return;
+    setPromoLoading(true);
+    setPromoError(null);
+    setPromoSuccess(null);
+    try {
+      const res = await api.applyPromoCode(promoCode.trim());
+      setPromoSuccess(res.message);
+      onSuccess(res.newBalance);
+      setPromoCode('');
+      try {
+        confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });
+      } catch {}
+    } catch (err: any) {
+      setPromoError(err.message || 'Ошибка применения промокода');
+    } finally {
+      setPromoLoading(false);
+    }
+  };
 
   // Background polling for active invoice
   const startPolling = (invoiceId: string) => {
@@ -353,11 +411,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => {
-                        stopPolling();
-                        setActiveInvoice(null);
-                        setError(null);
-                      }}
+                      onClick={handleBackToCreateForm}
                       className="py-2.5 px-3 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs text-neutral-400 hover:text-neutral-200 rounded-xl transition-all cursor-pointer"
                     >
                       Создать другой счёт
@@ -497,6 +551,79 @@ export const DepositModal: React.FC<DepositModalProps> = ({
                       {totalAmountToPay.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} ₽
                     </span>
                   </div>
+                </div>
+
+                {/* Promo Code section */}
+                <div className="pt-0.5">
+                  {!isPromoExpanded ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsPromoExpanded(true);
+                        setPromoError(null);
+                        setPromoSuccess(null);
+                      }}
+                      className="text-xs text-amber-400 hover:text-amber-300 transition-colors flex items-center gap-1.5 font-medium cursor-pointer py-1"
+                    >
+                      <Tag className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Применить промокод</span>
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-neutral-950 rounded-xl border border-amber-500/30 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-neutral-300 flex items-center gap-1.5">
+                          <Tag className="w-3.5 h-3.5 text-amber-400" />
+                          Активация промокода
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsPromoExpanded(false);
+                            setPromoError(null);
+                            setPromoSuccess(null);
+                          }}
+                          className="text-[11px] text-neutral-500 hover:text-neutral-300 cursor-pointer"
+                        >
+                          Скрыть
+                        </button>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={promoCode}
+                          onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleApplyPromo();
+                            }
+                          }}
+                          placeholder="ВВЕДИТЕ ПРОМОКОД"
+                          className="flex-1 bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-xs text-white uppercase font-mono focus:outline-hidden focus:border-amber-500 transition-colors"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleApplyPromo}
+                          disabled={promoLoading || !promoCode.trim()}
+                          className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-neutral-950 font-bold text-xs rounded-lg transition-all cursor-pointer font-mono shrink-0"
+                        >
+                          {promoLoading ? '...' : 'Применить'}
+                        </button>
+                      </div>
+                      {promoSuccess && (
+                        <p className="text-[11px] text-emerald-400 font-mono flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>{promoSuccess}</span>
+                        </p>
+                      )}
+                      {promoError && (
+                        <p className="text-[11px] text-rose-400 font-mono flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{promoError}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Submit button */}

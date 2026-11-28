@@ -13,6 +13,8 @@ import {
 
 interface ProofOfBetCommentsProps {
   temkaId: string;
+  temkaOwnerId?: string;
+  isOwner?: boolean;
   comments: Comment[];
   currentUser: User | null;
   hasUserDeposited: boolean;
@@ -23,6 +25,8 @@ interface ProofOfBetCommentsProps {
 
 export const ProofOfBetComments: React.FC<ProofOfBetCommentsProps> = ({
   temkaId,
+  temkaOwnerId,
+  isOwner = false,
   comments,
   currentUser,
   hasUserDeposited,
@@ -94,7 +98,7 @@ export const ProofOfBetComments: React.FC<ProofOfBetCommentsProps> = ({
               </span>
             </h3>
             <p className="text-xs text-neutral-400">
-              Мнения реальных инвесторов с верифицированной статистикой депозитов и доходности
+              Отзывы игроков, которые уже делали ставки в эту темку
             </p>
           </div>
         </div>
@@ -134,39 +138,46 @@ export const ProofOfBetComments: React.FC<ProofOfBetCommentsProps> = ({
       {/* Post Comment Form */}
       <div>
         {currentUser ? (
-          hasUserDeposited ? (
+          hasUserDeposited || isOwner ? (
             <form onSubmit={handleSubmit} className="space-y-3 bg-neutral-950/80 border border-neutral-800/80 rounded-2xl p-4">
               <div>
                 <textarea
                   rows={2}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Оставьте отзыв о работе алгоритма темки, доходности или пуле ликвидности..."
+                  placeholder="Напишите отзыв о темке, выплатах или авторе..."
                   className="w-full bg-neutral-900 border border-neutral-700/80 rounded-xl p-3 text-sm text-white placeholder:text-neutral-500 focus:outline-hidden focus:border-amber-500 transition-colors resize-none"
                 />
               </div>
 
               {/* User Verified Badge Preview */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-2 text-neutral-400 bg-neutral-900 px-3 py-1.5 rounded-xl border border-neutral-800">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  <span>Ваша статистика:</span>
-                  <span className="font-mono text-neutral-200">
-                    Ставки ~{userStats?.roundedTotalBets?.toLocaleString()} ₽
-                  </span>
-                  <span className="text-neutral-600">|</span>
-                  <span
-                    className={`font-mono font-bold ${
-                      userStats?.colorCode === 'green'
-                        ? 'text-emerald-400'
-                        : userStats?.colorCode === 'red'
-                        ? 'text-rose-400'
-                        : 'text-neutral-400'
-                    }`}
-                  >
-                    ROI: {userStats?.exactRoiMultiplier}x
-                  </span>
-                </div>
+                {isOwner && !hasUserDeposited ? (
+                  <div className="flex items-center gap-2 text-amber-300 bg-amber-500/10 px-3 py-1.5 rounded-xl border border-amber-500/30">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span className="font-bold">Автор темки</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-neutral-400 bg-neutral-900 px-3 py-1.5 rounded-xl border border-neutral-800">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    <span>Ваша статистика:</span>
+                    <span className="font-mono text-neutral-200">
+                      Ставки ~{userStats?.roundedTotalBets?.toLocaleString()} ₽
+                    </span>
+                    <span className="text-neutral-600">|</span>
+                    <span
+                      className={`font-mono font-bold ${
+                        userStats?.colorCode === 'green'
+                          ? 'text-emerald-400'
+                          : userStats?.colorCode === 'red'
+                          ? 'text-rose-400'
+                          : 'text-neutral-400'
+                      }`}
+                    >
+                      ROI: {userStats?.exactRoiMultiplier}x
+                    </span>
+                  </div>
+                )}
 
                 <button
                   type="submit"
@@ -182,8 +193,8 @@ export const ProofOfBetComments: React.FC<ProofOfBetCommentsProps> = ({
             <div className="p-4 bg-neutral-950/80 border border-neutral-800 rounded-2xl flex items-center gap-3 text-xs text-neutral-400">
               <Lock className="w-5 h-5 text-amber-400 shrink-0" />
               <span>
-                <strong>Отзывы доступны инвесторам:</strong> чтобы оставить отзыв или поставить лайк,
-                сделайте хотя бы одну ставку в этот смарт-контракт.
+                <strong>Отзывы доступны игрокам:</strong> сделайте хотя бы одну ставку в эту темку,
+                чтобы оставить отзыв или поставить лайк.
               </span>
             </div>
           )
@@ -249,18 +260,25 @@ export const ProofOfBetComments: React.FC<ProofOfBetCommentsProps> = ({
                   </div>
 
                   {/* Investor Verified Stats Badge */}
-                  <div
-                    className={`inline-flex items-center gap-2 px-3 py-1 rounded-xl border text-[11px] font-mono ${badgeColor}`}
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                    <span>Депозиты: ~{comment.userStats.roundedTotalBets.toLocaleString()} ₽</span>
-                    <span className="opacity-40">|</span>
-                    <span>Выплаты: ~{comment.userStats.roundedTotalPayouts.toLocaleString()} ₽</span>
-                    <span className="opacity-40">|</span>
-                    <strong className="font-bold">
-                      ROI {comment.userStats.exactRoiMultiplier}x
-                    </strong>
-                  </div>
+                  {temkaOwnerId && comment.userId === temkaOwnerId && comment.userStats.roundedTotalBets === 0 ? (
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl border text-[11px] font-mono text-amber-300 bg-amber-500/10 border-amber-500/30">
+                      <Sparkles className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                      <span className="font-bold">Автор темки</span>
+                    </div>
+                  ) : (
+                    <div
+                      className={`inline-flex items-center gap-2 px-3 py-1 rounded-xl border text-[11px] font-mono ${badgeColor}`}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                      <span>Депозиты: ~{comment.userStats.roundedTotalBets.toLocaleString()} ₽</span>
+                      <span className="opacity-40">|</span>
+                      <span>Выплаты: ~{comment.userStats.roundedTotalPayouts.toLocaleString()} ₽</span>
+                      <span className="opacity-40">|</span>
+                      <strong className="font-bold">
+                        ROI {comment.userStats.exactRoiMultiplier}x
+                      </strong>
+                    </div>
+                  )}
                 </div>
 
                 {/* Comment Text */}

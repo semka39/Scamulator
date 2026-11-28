@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from './api';
-import { User, Temka } from './types';
+import { User, Temka, TemkaClonePayload } from './types';
 import { InAppBrowserBanner } from './components/InAppBrowserBanner';
 import { Header } from './components/Header';
 import { AuthModal } from './components/AuthModal';
@@ -12,8 +12,20 @@ import { CreateTemkaModal } from './components/CreateTemkaModal';
 import { DepositModal } from './components/DepositModal';
 import { TransferModal } from './components/TransferModal';
 import { LeaderboardView } from './components/LeaderboardView';
+import { NotificationsModal } from './components/NotificationsModal';
 
 type AppTab = 'catalog' | 'dashboard' | 'temka' | 'profile' | 'leaderboard';
+
+interface AppHistoryState {
+  __scamulator: true;
+  tab: AppTab;
+  temkaId: string | null;
+  authorId: string | null;
+  modal: 'auth' | 'create' | 'deposit' | 'transfer' | 'notifications' | null;
+  authMode?: 'login' | 'register';
+  transferRecipient?: string;
+  depth: number;
+}
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -28,6 +40,10 @@ export default function App() {
   const [isDepositOpen, setIsDepositOpen] = useState(false);
   const [isTransferOpen, setIsTransferOpen] = useState(false);
   const [transferRecipient, setTransferRecipient] = useState<string>('');
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [cloneData, setCloneData] = useState<TemkaClonePayload | null>(null);
+  const isClosingModalRef = useRef(false);
 
   // Initial session fetch
   const refreshUser = async () => {
@@ -36,6 +52,56 @@ export default function App() {
       setCurrentUser(user);
     } catch {
       setCurrentUser(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser) {
+      setUnreadNotifications(0);
+      return;
+    }
+    const fetchUnread = async () => {
+      if (document.hidden) return;
+      try {
+        const res = await api.getNotifications();
+        setUnreadNotifications(res.unreadCount);
+      } catch {}
+    };
+    fetchUnread();
+    const timer = setInterval(fetchUnread, 15000);
+    return () => clearInterval(timer);
+  }, [currentUser?.id]);
+
+  // Synchronize React state from a history state entry
+  const applyHistoryState = (state: AppHistoryState | null) => {
+    isClosingModalRef.current = false;
+    if (!state || !state.__scamulator) {
+      setActiveTab('catalog');
+      setSelectedTemkaId(null);
+      setSelectedAuthorId(null);
+      setIsAuthOpen(false);
+      setIsCreateOpen(false);
+      setIsDepositOpen(false);
+      setIsTransferOpen(false);
+      setIsNotificationsOpen(false);
+      setTransferRecipient('');
+      return;
+    }
+
+    setActiveTab(state.tab || 'catalog');
+    setSelectedTemkaId(state.temkaId || null);
+    setSelectedAuthorId(state.authorId || null);
+
+    setIsAuthOpen(state.modal === 'auth');
+    if (state.authMode) setAuthMode(state.authMode);
+
+    setIsCreateOpen(state.modal === 'create');
+    setIsDepositOpen(state.modal === 'deposit');
+    setIsNotificationsOpen(state.modal === 'notifications');
+
+    setIsTransferOpen(state.modal === 'transfer');
+    if (state.transferRecipient !== undefined) {
+      setTransferRecipient(state.transferRecipient);
     }
   };
 
@@ -49,59 +115,289 @@ export default function App() {
         document.cookie = `scam_gate_pass=${encodeURIComponent(gatePass)}; path=/; max-age=86400; SameSite=None; Secure`;
         document.cookie = `scam_gate_pass=${encodeURIComponent(gatePass)}; path=/; max-age=86400; SameSite=Lax`;
         url.searchParams.delete('gate_pass');
-        window.history.replaceState({}, '', url.pathname + (url.search ? url.search : '') + url.hash);
       }
     } catch (e) {}
 
+    // Initialize or restore history state
+    const existing = window.history.state as AppHistoryState | null;
+    if (existing && existing.__scamulator) {
+      applyHistoryState(existing);
+    } else {
+      const initial: AppHistoryState = {
+        __scamulator: true,
+        tab: 'catalog',
+        temkaId: null,
+        authorId: null,
+        modal: null,
+        depth: 0,
+      };
+      window.history.replaceState(initial, '');
+    }
+
+    // Listen to popstate (Browser Back / Forward buttons)
+    const handlePopState = (e: PopStateEvent) => {
+      applyHistoryState(e.state as AppHistoryState | null);
+    };
+
+    window.addEventListener('popstate', handlePopState);
     refreshUser();
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
+
+  const openModal = (
+    modal: 'auth' | 'create' | 'deposit' | 'transfer' | 'notifications',
+    opts?: { authMode?: 'login' | 'register'; transferRecipient?: string }
+  ) => {
+    if (modal === 'auth') {
+      setAuthMode(opts?.authMode || 'login');
+      setIsAuthOpen(true);
+    } else if (modal === 'create') {
+      setIsCreateOpen(true);
+    } else if (modal === 'deposit') {
+      setIsDepositOpen(true);
+    } else if (modal === 'transfer') {
+      setTransferRecipient(opts?.transferRecipient || '');
+      setIsTransferOpen(true);
+    } else if (modal === 'notifications') {
+      setIsNotificationsOpen(true);
+    }
+
+    const currentState = window.history.state as AppHistoryState | null;
+    const depth = (currentState?.depth ?? 0) + 1;
+    const nextState: AppHistoryState = {
+      __scamulator: true,
+      tab: currentState?.tab || activeTab,
+      temkaId: currentState?.temkaId ?? selectedTemkaId,
+      authorId: currentState?.authorId ?? selectedAuthorId,
+      modal,
+      authMode: opts?.authMode,
+      transferRecipient: opts?.transferRecipient,
+      depth,
+    };
+    window.history.pushState(nextState, '');
+  };
+
+  const closeModal = () => {
+    setIsAuthOpen(false);
+    setIsCreateOpen(false);
+    setIsDepositOpen(false);
+    setIsTransferOpen(false);
+    setIsNotificationsOpen(false);
+    setTransferRecipient('');
+    setCloneData(null);
+
+    if (isClosingModalRef.current) return;
+
+    const currentState = window.history.state as (AppHistoryState & { depositStep?: string }) | null;
+    if (currentState && currentState.modal) {
+      isClosingModalRef.current = true;
+      if (currentState.depositStep === 'invoice') {
+        window.history.go(-2);
+      } else {
+        window.history.back();
+      }
+    }
+  };
 
   const handleLogout = async () => {
     try {
       await api.logout();
       setCurrentUser(null);
       if (activeTab === 'dashboard') {
-        setActiveTab('catalog');
+        handleHeaderNavigate('catalog');
       }
     } catch (err) {
       console.error(err);
     }
   };
 
-  const navigateToTemka = (temkaId: string) => {
+  const navigateToTemka = (temkaId: string, replace = false) => {
     setSelectedTemkaId(temkaId);
+    setSelectedAuthorId(null);
     setActiveTab('temka');
+    setIsAuthOpen(false);
+    setIsCreateOpen(false);
+    setIsDepositOpen(false);
+    setIsTransferOpen(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    const currentState = window.history.state as AppHistoryState | null;
+    const depth = replace ? (currentState?.depth ?? 0) : (currentState?.depth ?? 0) + 1;
+    const nextState: AppHistoryState = {
+      __scamulator: true,
+      tab: 'temka',
+      temkaId,
+      authorId: null,
+      modal: null,
+      depth,
+    };
+
+    if (replace) {
+      window.history.replaceState(nextState, '');
+    } else {
+      window.history.pushState(nextState, '');
+    }
   };
 
-  const navigateToAuthor = (authorId: string) => {
+  const navigateToAuthor = (authorId: string, replace = false) => {
     setSelectedAuthorId(authorId);
+    setSelectedTemkaId(null);
     setActiveTab('profile');
+    setIsAuthOpen(false);
+    setIsCreateOpen(false);
+    setIsDepositOpen(false);
+    setIsTransferOpen(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    const currentState = window.history.state as AppHistoryState | null;
+    const depth = replace ? (currentState?.depth ?? 0) : (currentState?.depth ?? 0) + 1;
+    const nextState: AppHistoryState = {
+      __scamulator: true,
+      tab: 'profile',
+      temkaId: null,
+      authorId,
+      modal: null,
+      depth,
+    };
+
+    if (replace) {
+      window.history.replaceState(nextState, '');
+    } else {
+      window.history.pushState(nextState, '');
+    }
+  };
+
+  const handleHeaderNavigate = (view: AppTab, targetId?: string | null) => {
+    if (view === 'catalog') {
+      if (activeTab === 'catalog' && !selectedTemkaId && !selectedAuthorId && !window.history.state?.modal) {
+        return;
+      }
+      setSelectedTemkaId(null);
+      setSelectedAuthorId(null);
+      setActiveTab('catalog');
+      setIsAuthOpen(false);
+      setIsCreateOpen(false);
+      setIsDepositOpen(false);
+      setIsTransferOpen(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      const currentState = window.history.state as AppHistoryState | null;
+      const depth = (currentState?.depth ?? 0) + 1;
+      window.history.pushState(
+        {
+          __scamulator: true,
+          tab: 'catalog',
+          temkaId: null,
+          authorId: null,
+          modal: null,
+          depth,
+        },
+        ''
+      );
+    } else if (view === 'leaderboard') {
+      if (activeTab === 'leaderboard' && !window.history.state?.modal) {
+        return;
+      }
+      setSelectedTemkaId(null);
+      setSelectedAuthorId(null);
+      setActiveTab('leaderboard');
+      setIsAuthOpen(false);
+      setIsCreateOpen(false);
+      setIsDepositOpen(false);
+      setIsTransferOpen(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      const currentState = window.history.state as AppHistoryState | null;
+      const depth = (currentState?.depth ?? 0) + 1;
+      window.history.pushState(
+        {
+          __scamulator: true,
+          tab: 'leaderboard',
+          temkaId: null,
+          authorId: null,
+          modal: null,
+          depth,
+        },
+        ''
+      );
+    } else if (view === 'dashboard') {
+      if (!currentUser) {
+        openModal('auth', { authMode: 'login' });
+        return;
+      }
+      if (activeTab === 'dashboard' && !window.history.state?.modal) {
+        return;
+      }
+      setSelectedTemkaId(null);
+      setSelectedAuthorId(null);
+      setActiveTab('dashboard');
+      setIsAuthOpen(false);
+      setIsCreateOpen(false);
+      setIsDepositOpen(false);
+      setIsTransferOpen(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      const currentState = window.history.state as AppHistoryState | null;
+      const depth = (currentState?.depth ?? 0) + 1;
+      window.history.pushState(
+        {
+          __scamulator: true,
+          tab: 'dashboard',
+          temkaId: null,
+          authorId: null,
+          modal: null,
+          depth,
+        },
+        ''
+      );
+    } else if (view === 'profile') {
+      const target = targetId || (currentUser ? currentUser.id : null);
+      if (target) {
+        navigateToAuthor(target);
+      } else {
+        openModal('auth', { authMode: 'login' });
+      }
+    }
+  };
+
+  const handleOnScreenBack = () => {
+    const currentState = window.history.state as AppHistoryState | null;
+    if (currentState && (currentState.depth ?? 0) > 0) {
+      window.history.back();
+    } else {
+      handleHeaderNavigate('catalog');
+    }
   };
 
   const handleCreateSuccess = (temka: Temka) => {
     refreshUser();
-    navigateToTemka(temka.id);
+    setIsCreateOpen(false);
+    setCloneData(null);
+    navigateToTemka(temka.id, true);
+  };
+
+  const handleCloneTemka = (data: TemkaClonePayload) => {
+    setCloneData(data);
+    openModal('create');
   };
 
   const handleOpenTransfer = (recipientUsername?: string) => {
     if (!currentUser) {
-      setAuthMode('login');
-      setIsAuthOpen(true);
+      openModal('auth', { authMode: 'login' });
       return;
     }
-    setTransferRecipient(recipientUsername || '');
-    setIsTransferOpen(true);
+    openModal('transfer', { transferRecipient: recipientUsername || '' });
   };
 
   const handleOpenDeposit = () => {
     if (!currentUser) {
-      setAuthMode('login');
-      setIsAuthOpen(true);
+      openModal('auth', { authMode: 'login' });
       return;
     }
-    setIsDepositOpen(true);
+    openModal('deposit');
   };
 
   return (
@@ -114,47 +410,20 @@ export default function App() {
         currentUser={currentUser}
         activeView={activeTab}
         currentProfileUserId={activeTab === 'profile' ? selectedAuthorId : null}
-        onNavigate={(view, targetId) => {
-          if (view === 'catalog') {
-            setSelectedTemkaId(null);
-            setSelectedAuthorId(null);
-            setActiveTab('catalog');
-          } else if (view === 'leaderboard') {
-            setSelectedTemkaId(null);
-            setSelectedAuthorId(null);
-            setActiveTab('leaderboard');
-          } else if (view === 'dashboard') {
-            if (!currentUser) {
-              setAuthMode('login');
-              setIsAuthOpen(true);
-              return;
-            }
-            setActiveTab('dashboard');
-          } else if (view === 'profile') {
-            const target = targetId || (currentUser ? currentUser.id : null);
-            if (target) {
-              setSelectedAuthorId(target);
-              setActiveTab('profile');
-            } else {
-              setAuthMode('login');
-              setIsAuthOpen(true);
-            }
-          }
-        }}
+        onNavigate={handleHeaderNavigate}
         onOpenCreateModal={() => {
           if (!currentUser) {
-            setAuthMode('login');
-            setIsAuthOpen(true);
+            openModal('auth', { authMode: 'login' });
           } else {
-            setIsCreateOpen(true);
+            setCloneData(null);
+            openModal('create');
           }
         }}
-        onOpenAuthModal={() => {
-          setAuthMode('login');
-          setIsAuthOpen(true);
-        }}
+        onOpenAuthModal={() => openModal('auth', { authMode: 'login' })}
         onOpenDepositModal={handleOpenDeposit}
         onOpenTransferModal={() => handleOpenTransfer()}
+        onOpenNotificationsModal={() => openModal('notifications')}
+        unreadNotificationsCount={unreadNotifications}
         onLogout={handleLogout}
       />
 
@@ -179,7 +448,11 @@ export default function App() {
           <PrivateDashboard
             currentUser={currentUser}
             onNavigateTemka={navigateToTemka}
-            onOpenCreateModal={() => setIsCreateOpen(true)}
+            onOpenCreateModal={() => {
+              setCloneData(null);
+              openModal('create');
+            }}
+            onCloneTemka={handleCloneTemka}
             onOpenDepositModal={handleOpenDeposit}
             onOpenTransferModal={() => handleOpenTransfer()}
             onUserBalanceUpdated={(newBal) =>
@@ -192,7 +465,7 @@ export default function App() {
           <PublicTemkaView
             temkaId={selectedTemkaId}
             currentUser={currentUser}
-            onBack={() => setActiveTab('catalog')}
+            onBack={handleOnScreenBack}
             onViewAuthor={navigateToAuthor}
             onUserBalanceUpdated={(newBal) => {
               if (currentUser) {
@@ -206,7 +479,7 @@ export default function App() {
           <PublicProfileView
             userId={selectedAuthorId}
             currentUser={currentUser}
-            onBack={() => setActiveTab('catalog')}
+            onBack={handleOnScreenBack}
             onNavigateTemka={navigateToTemka}
             onOpenTransferModal={(recipient) => handleOpenTransfer(recipient)}
             onProfileUpdated={(updatedUser) => {
@@ -225,7 +498,7 @@ export default function App() {
             </span>
             <span className="hidden sm:inline text-neutral-600">•</span>
             <span className="text-neutral-400">
-              Симулятор высокорисковых схем и алгоритмических пулов
+              Игра-симулятор высокорисковых темок
             </span>
           </div>
 
@@ -239,7 +512,7 @@ export default function App() {
       <AuthModal
         isOpen={isAuthOpen}
         initialMode={authMode}
-        onClose={() => setIsAuthOpen(false)}
+        onClose={closeModal}
         onSuccess={(user) => {
           setCurrentUser(user);
         }}
@@ -249,16 +522,34 @@ export default function App() {
       <CreateTemkaModal
         isOpen={isCreateOpen}
         currentUser={currentUser}
-        onClose={() => setIsCreateOpen(false)}
+        cloneData={cloneData}
+        onClose={closeModal}
         onSuccess={handleCreateSuccess}
       />
+
+      {/* Notifications Modal */}
+      {currentUser && (
+        <NotificationsModal
+          isOpen={isNotificationsOpen}
+          onClose={closeModal}
+          onNavigateTemka={(temkaId) => {
+            setIsNotificationsOpen(false);
+            navigateToTemka(temkaId, true);
+          }}
+          onNavigateProfile={(userId) => {
+            setIsNotificationsOpen(false);
+            navigateToAuthor(userId, true);
+          }}
+          onUnreadCountChanged={(count) => setUnreadNotifications(count)}
+        />
+      )}
 
       {/* Deposit Modal (Argon Pay) */}
       {currentUser && (
         <DepositModal
           isOpen={isDepositOpen}
           currentUser={currentUser}
-          onClose={() => setIsDepositOpen(false)}
+          onClose={closeModal}
           onSuccess={(newBalance) => {
             setCurrentUser({ ...currentUser, balance: newBalance });
           }}
@@ -271,10 +562,7 @@ export default function App() {
           isOpen={isTransferOpen}
           currentUser={currentUser}
           initialRecipient={transferRecipient}
-          onClose={() => {
-            setIsTransferOpen(false);
-            setTransferRecipient('');
-          }}
+          onClose={closeModal}
           onSuccess={(newBalance) => {
             setCurrentUser({ ...currentUser, balance: newBalance });
           }}

@@ -211,7 +211,7 @@ export const TransferModal: React.FC<TransferModalProps> = ({
                   maxLength={200}
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
-                  placeholder="Возврат долга / Инвестиции в смарт-контракт"
+                  placeholder="Возврат долга / На ставку"
                   className="w-full bg-neutral-950 border border-neutral-700 rounded-xl pl-9 pr-3 py-2 text-sm text-white focus:outline-hidden focus:border-amber-500 transition-colors"
                 />
               </div>

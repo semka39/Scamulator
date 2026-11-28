@@ -52,7 +52,7 @@ export const SandboxLogsModal: React.FC<SandboxLogsModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-white flex items-center gap-2">
-                Логи песочницы Python Sandbox
+                Логи работы темки
               </h2>
               <p className="text-xs text-neutral-400 font-mono">Темка: {temkaTitle}</p>
             </div>
@@ -79,9 +79,9 @@ export const SandboxLogsModal: React.FC<SandboxLogsModalProps> = ({
         {/* Sandbox Specifications Info */}
         <div className="mt-3 py-2 px-3 bg-neutral-950/80 border border-neutral-800 rounded-xl flex items-center justify-between text-[11px] font-mono text-neutral-400">
           <span className="flex items-center gap-1.5">
-            <Cpu className="w-3.5 h-3.5 text-amber-400" /> Timeout: 2.0s | RAM: 64MB | Mutex FIFO
+            <Cpu className="w-3.5 h-3.5 text-amber-400" /> Лимит: 4.0 сек | RAM: 64 МБ
           </span>
-          <span className="text-neutral-500">Atomic State Commits (3MB max)</span>
+          <span className="text-neutral-500">История запусков</span>
         </div>
 
         {error && (
@@ -135,19 +135,21 @@ export const SandboxLogsModal: React.FC<SandboxLogsModalProps> = ({
                   </div>
 
                   <div className="text-[11px] text-neutral-400 mb-1">
-                    Инвестор (hash): <span className="text-amber-400/80">{log.userHash}</span>
+                    Игрок (hash): <span className="text-amber-400/80">{log.userHash}</span>
                   </div>
 
-                  {log.stdout && (
+                  {log.stdout && log.stdout.trim() ? (
                     <div className="mt-2 bg-neutral-900/90 rounded-lg p-2.5 text-neutral-200 border border-neutral-800/80 whitespace-pre-wrap text-[11px]">
-                      <span className="text-neutral-500 select-none">[stdout]: </span>
-                      {log.stdout}
+                      {log.stdout.trim()}
                     </div>
-                  )}
+                  ) : !log.stderr && !log.error ? (
+                    <div className="mt-2 text-neutral-500 italic text-[11px]">
+                      (скрипт ничего не вывел)
+                    </div>
+                  ) : null}
 
                   {(log.stderr || log.error) && (
                     <div className="mt-2 bg-rose-950/40 border border-rose-900/60 rounded-lg p-2.5 text-rose-300 whitespace-pre-wrap text-[11px]">
-                      <span className="text-rose-500 select-none">[stderr/error]: </span>
                       {log.error || log.stderr}
                     </div>
                   )}

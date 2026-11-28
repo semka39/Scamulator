@@ -12,6 +12,7 @@ import {
   Flame,
   ArrowRightLeft,
   Zap,
+  Bell,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -22,6 +23,8 @@ interface HeaderProps {
   onOpenAuthModal: () => void;
   onOpenDepositModal?: () => void;
   onOpenTransferModal?: () => void;
+  onOpenNotificationsModal?: () => void;
+  unreadNotificationsCount?: number;
   onLogout: () => void;
   currentProfileUserId?: string | null;
 }
@@ -34,6 +37,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAuthModal,
   onOpenDepositModal,
   onOpenTransferModal,
+  onOpenNotificationsModal,
+  unreadNotificationsCount = 0,
   onLogout,
   currentProfileUserId,
 }) => {
@@ -63,7 +68,7 @@ export const Header: React.FC<HeaderProps> = ({
                   SCAM<span className="text-amber-400">ULATOR</span>
                 </span>
                 <span className="block text-[10px] text-neutral-400 font-mono tracking-wider uppercase -mt-0.5">
-                  Смарт-контракты
+                  Биржа темок
                 </span>
               </div>
             </button>
@@ -138,6 +143,23 @@ export const Header: React.FC<HeaderProps> = ({
                   <PlusCircle className="w-4 h-4" />
                   <span>Создать темку</span>
                 </button>
+
+                {/* Notifications Bell */}
+                {onOpenNotificationsModal && (
+                  <button
+                    id="header-notifications-btn"
+                    onClick={onOpenNotificationsModal}
+                    title="Уведомления"
+                    className="relative p-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 hover:border-neutral-700 text-neutral-300 hover:text-amber-400 rounded-xl transition-colors cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center shrink-0"
+                  >
+                    <Bell className="w-4 h-4" />
+                    {unreadNotificationsCount > 0 && (
+                      <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-mono font-bold flex items-center justify-center shadow-md">
+                        {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
+                      </span>
+                    )}
+                  </button>
+                )}
 
                 {/* User avatar & logout (Avatar is highlighted when in own profile) */}
                 <div className="flex items-center gap-1.5 sm:gap-2 pl-1 border-l border-neutral-800 shrink-0">

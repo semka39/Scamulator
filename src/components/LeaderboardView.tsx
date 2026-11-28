@@ -127,7 +127,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
                 </span>
               </h1>
               <p className="text-xs text-neutral-400 mt-1">
-                Рейтинг инвесторов и архитекторов смарт-контрактов платформы Scamulator
+                Рейтинг самых богатых игроков и авторов Scamulator
               </p>
             </div>
           </div>

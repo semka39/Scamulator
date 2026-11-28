@@ -69,16 +69,15 @@ export const CatalogView: React.FC<CatalogViewProps> = ({ onSelectTemka, onSelec
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="text-xs font-mono text-amber-400 uppercase tracking-wider font-bold">
-                Свободный рынок смарт-контрактов
+                Биржа темок
               </span>
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             </div>
             <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
-              Каталог финансовых алгоритмов и темок
+              Каталог темок
             </h1>
             <p className="text-xs text-neutral-400 mt-1 max-w-2xl">
-              Исследуйте смарт-контракты под управлением скриптов Python, анализируйте показатели RTP и
-              залог авторов в режиме реального времени.
+              Выбирайте темку по душе, смотрите доходность (RTP), банк и залог автора в реальном времени.
             </p>
           </div>
 

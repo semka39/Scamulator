@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { User, Temka, SimulationResult } from '../types';
+import { User, Temka, SimulationResult, TemkaClonePayload } from '../types';
 import {
   X,
   Code2,
@@ -23,6 +23,7 @@ import {
 interface CreateTemkaModalProps {
   isOpen: boolean;
   currentUser: User | null;
+  cloneData?: TemkaClonePayload | null;
   onClose: () => void;
   onSuccess: (temka: Temka) => void;
 }
@@ -30,6 +31,7 @@ interface CreateTemkaModalProps {
 export const CreateTemkaModal: React.FC<CreateTemkaModalProps> = ({
   isOpen,
   currentUser,
+  cloneData,
   onClose,
   onSuccess,
 }) => {
@@ -89,8 +91,8 @@ else:
     return int(amount * 0.20)`,
     },
     {
-      name: 'Мясорубка (Срез 70% в пул)',
-      code: `# Агрессивный сбор ликвидности для пула
+      name: 'Мясорубка (Срез 70% в темку)',
+      code: `# Агрессивный сбор банка темки
 roll = random.randint(1, 100)
 if roll >= 90:
     return int(amount * 2.50)
@@ -111,6 +113,21 @@ else:
   const [testBetAmount, setTestBetAmount] = useState<number>(100);
   const [simResult, setSimResult] = useState<SimulationResult | null>(null);
   const [showSimDetails, setShowSimDetails] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setError(null);
+    setSimResult(null);
+    if (cloneData) {
+      setTitle(cloneData.title);
+      setDescription(cloneData.description);
+      setAlgorithmCode(cloneData.algorithmCode || ALGORITHM_TEMPLATES[0].code);
+      setInitialCapital(cloneData.initialCapital);
+      setCollateral(cloneData.collateral);
+      setMinBet(cloneData.minBet);
+      setMaxBet(cloneData.maxBet);
+    }
+  }, [isOpen, cloneData]);
 
   if (!isOpen) return null;
 
@@ -163,7 +180,7 @@ else:
       onSuccess(res.temka);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Ошибка запуска смарт-контракта');
+      setError(err.message || 'Ошибка запуска темки');
     } finally {
       setLoading(false);
     }
@@ -183,7 +200,7 @@ else:
                 Конструктор темки
               </h2>
               <p className="text-xs text-neutral-400 hidden sm:block">
-                Запустите собственный микроэкономический пул с изолированной Python-песочницей
+                Создайте свою темку и задайте правила выплат на Python
               </p>
             </div>
           </div>
@@ -216,21 +233,21 @@ else:
                 required
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Например: Квантовый Арбитраж v2"
+                placeholder="Например: Удвоитель 2000"
                 className="w-full bg-neutral-950 border border-neutral-700 rounded-xl p-2.5 text-white focus:border-amber-500 focus:outline-hidden"
               />
             </div>
 
             <div>
               <label className="block text-neutral-300 font-medium mb-1">
-                Краткое описание финансовой механики <span className="text-amber-400">*</span>
+                Краткое описание механики <span className="text-amber-400">*</span>
               </label>
               <input
                 type="text"
                 required
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Например: Пул с прогрессивным кэшбэком и защитой от китов"
+                placeholder="Например: Темка с прогрессивным кэшбэком и защитой от крупных ставок"
                 className="w-full bg-neutral-950 border border-neutral-700 rounded-xl p-2.5 text-white focus:border-amber-500 focus:outline-hidden"
               />
             </div>
@@ -250,7 +267,7 @@ else:
                 onChange={(e) => setInitialCapital(Number(e.target.value))}
                 className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-white font-mono font-bold"
               />
-              <span className="text-[10px] text-neutral-500 mt-0.5 block">Пул для выплат</span>
+              <span className="text-[10px] text-neutral-500 mt-0.5 block">Банк для выплат</span>
             </div>
 
             <div>
@@ -306,7 +323,7 @@ else:
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
               <label className="text-neutral-300 font-medium flex items-center gap-1.5">
                 <Terminal className="w-4 h-4 text-amber-400" />
-                Алгоритмический скрипт Python 3.10
+                Код темки (Python)
               </label>
 
               {/* Template selector */}
@@ -346,7 +363,7 @@ else:
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <Zap className="w-4 h-4 text-amber-400" />
-                  <span className="font-bold text-white text-xs">Песочница: Тестовая симуляция</span>
+                  <span className="font-bold text-white text-xs">Тест кода перед запуском</span>
                 </div>
 
                 <div className="flex items-center gap-3">

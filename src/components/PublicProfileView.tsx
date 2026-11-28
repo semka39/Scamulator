@@ -441,7 +441,7 @@ export const PublicProfileView: React.FC<PublicProfileViewProps> = ({
                   maxLength={500}
                   value={editBio}
                   onChange={(e) => setEditBio(e.target.value)}
-                  placeholder="Расскажите о себе, вашей торговой стратегии или алгоритмах смарт-контрактов..."
+                  placeholder="Расскажите о себе и своих темках..."
                   className="w-full px-3.5 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-xs text-neutral-200 focus:outline-hidden focus:border-amber-500 leading-relaxed resize-none font-sans"
                 />
 
@@ -528,7 +528,7 @@ export const PublicProfileView: React.FC<PublicProfileViewProps> = ({
             <h2 className="text-base font-bold text-white uppercase tracking-wider font-mono">
               Каталог проектов автора ({temkas.length})
             </h2>
-            <p className="text-xs text-neutral-400">Все созданные смарт-контракты создателя</p>
+            <p className="text-xs text-neutral-400">Все темки автора</p>
           </div>
 
           {/* Status Filter Chips */}

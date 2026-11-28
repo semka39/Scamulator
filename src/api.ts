@@ -12,6 +12,8 @@ import {
   Invoice,
   BalanceHistoryItem,
   LeaderboardResponse,
+  AppNotification,
+  NotificationSettings,
 } from './types';
 
 const TOKEN_KEY = 'temshchik_auth_token';
@@ -120,7 +122,7 @@ export const api = {
   register: async (username: string, password: string, captchaToken?: string) => {
     const res = await request<{ user: User; token: string }>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ username, password, captchaToken: captchaToken || 'verified_hcaptcha_token' }),
+      body: JSON.stringify({ username, password, captchaToken }),
     });
     setAuthToken(res.token);
     return res;
@@ -128,11 +130,30 @@ export const api = {
   logout: async () => {
     clearAuthToken();
   },
-  faucet: () => request<{ balance: number; message: string }>('/users/me/faucet', { method: 'POST' }),
-  claimFaucet: async () => {
-    const res = await request<{ balance: number; message: string }>('/users/me/faucet', { method: 'POST' });
-    return { newBalance: res.balance, message: res.message };
-  },
+
+  // Notifications
+  getNotifications: () =>
+    request<{ notifications: AppNotification[]; unreadCount: number }>('/notifications'),
+  markNotificationsRead: (notificationId?: string) =>
+    request<{ success: boolean; unreadCount: number }>('/notifications/read', {
+      method: 'POST',
+      body: JSON.stringify({ notificationId }),
+    }),
+  deleteNotification: (notificationId: string) =>
+    request<{ success: boolean; unreadCount: number }>(`/notifications/${notificationId}`, {
+      method: 'DELETE',
+    }),
+  clearNotifications: () =>
+    request<{ success: boolean; unreadCount: number }>('/notifications', {
+      method: 'DELETE',
+    }),
+  getNotificationSettings: () =>
+    request<{ settings: NotificationSettings }>('/notifications/settings'),
+  updateNotificationSettings: (settings: Partial<NotificationSettings>) =>
+    request<{ success: boolean; settings: NotificationSettings }>('/notifications/settings', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }),
 
   // Transfers
   transfer: (recipientUsername: string, amount: number, comment?: string) =>
@@ -154,6 +175,13 @@ export const api = {
       `/deposit/check/${invoiceId}`
     ),
   getDepositInvoices: () => request<{ invoices: Invoice[] }>('/deposit/invoices'),
+
+  // Promo Codes
+  applyPromoCode: (code: string) =>
+    request<{ success: boolean; amount: number; newBalance: number; message: string }>('/promo/apply', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
 
   // Profiles & Leaderboard
   getPublicProfile: (userId: string) =>
@@ -222,6 +250,15 @@ export const api = {
         canBet: boolean;
         hasUserDeposited: boolean;
         userStats: any;
+        myTransactions?: Array<{
+          id: string;
+          amount: number;
+          payout: number;
+          multiplier: number;
+          isDefault: boolean;
+          isRefund: boolean;
+          timestamp: string;
+        }>;
       };
     }>(`/temkas/${temkaId}`),
 

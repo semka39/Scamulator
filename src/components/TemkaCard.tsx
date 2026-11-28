@@ -51,7 +51,7 @@ export const TemkaCard: React.FC<TemkaCardProps> = ({ temka, onClick, onAuthorCl
         <div className="-mx-5 -mt-5 mb-3.5 bg-gradient-to-r from-amber-500/20 via-rose-500/20 to-amber-500/20 border-b border-amber-500/30 px-4 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] font-mono text-amber-300">
           <span className="flex items-center gap-1.5 font-bold">
             <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 animate-pulse" />
-            <span>Вывод владельца: <strong className="text-amber-200">{temka.activeWithdrawalRatio}%</strong> от пула</span>
+            <span>Вывод владельца: <strong className="text-amber-200">{temka.activeWithdrawalRatio}%</strong> от банка</span>
           </span>
           <span className="text-neutral-300 text-[10px] sm:text-[11px]">
             Осталось депозитов: <strong className="text-white">{temka.depositsLeftForWithdrawal ?? 0}</strong>/10
@@ -103,7 +103,7 @@ export const TemkaCard: React.FC<TemkaCardProps> = ({ temka, onClick, onAuthorCl
           {/* Capital */}
           <div>
             <span className="text-[10px] uppercase font-mono tracking-wider text-neutral-500 block mb-0.5">
-              Пул ликвидности
+              Банк темки
             </span>
             <div className="flex items-center gap-1 font-mono font-bold text-sm text-emerald-400">
               <Coins className="w-3.5 h-3.5" />

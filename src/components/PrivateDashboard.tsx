@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { Temka, User, CreatorMetrics, BalanceHistoryItem, BalanceCategory, BalanceDirection } from '../types';
+import { Temka, User, CreatorMetrics, BalanceHistoryItem, BalanceCategory, BalanceDirection, TemkaClonePayload } from '../types';
 import { SandboxLogsModal } from './SandboxLogsModal';
 import {
   Coins,
@@ -10,7 +10,6 @@ import {
   PlusCircle,
   Clock,
   AlertTriangle,
-  Trash2,
   Edit3,
   Terminal,
   ArrowDownToLine,
@@ -30,12 +29,14 @@ import {
   Layers,
   ChevronDown,
   X,
+  Copy,
 } from 'lucide-react';
 
 interface PrivateDashboardProps {
   currentUser: User;
   onNavigateTemka: (temkaId: string) => void;
   onOpenCreateModal: () => void;
+  onCloneTemka?: (cloneData: TemkaClonePayload) => void;
   onOpenDepositModal?: () => void;
   onOpenTransferModal?: () => void;
   onUserBalanceUpdated: (newBalance: number) => void;
@@ -115,6 +116,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
   currentUser,
   onNavigateTemka,
   onOpenCreateModal,
+  onCloneTemka,
   onOpenDepositModal,
   onOpenTransferModal,
   onUserBalanceUpdated,
@@ -142,6 +144,37 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
   const [editModal, setEditModal] = useState<{ id: string; title: string; description: string } | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editDesc, setEditDesc] = useState('');
+
+  const hasSubModal = Boolean(topUpModal || withdrawalModal || editModal || activeLogsTemka);
+
+  // Support browser Back button when a dashboard sub-modal is open
+  useEffect(() => {
+    if (!hasSubModal) return;
+
+    window.history.pushState({ ...window.history.state, subModal: 'dashboardModal' }, '');
+
+    const handlePopDashboardModal = () => {
+      setTopUpModal(null);
+      setWithdrawalModal(null);
+      setEditModal(null);
+      setActiveLogsTemka(null);
+    };
+
+    window.addEventListener('popstate', handlePopDashboardModal, { once: true });
+    return () => {
+      window.removeEventListener('popstate', handlePopDashboardModal);
+    };
+  }, [hasSubModal]);
+
+  const closeDashboardModals = () => {
+    setTopUpModal(null);
+    setWithdrawalModal(null);
+    setEditModal(null);
+    setActiveLogsTemka(null);
+    if (window.history.state?.subModal === 'dashboardModal') {
+      window.history.back();
+    }
+  };
 
   // Balance History State
   const [historyItems, setHistoryItems] = useState<BalanceHistoryItem[]>([]);
@@ -200,7 +233,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
     try {
       const res = await api.topUpCapital(topUpModal.id, topUpAmount);
       setSuccessMsg(res.message);
-      setTopUpModal(null);
+      closeDashboardModals();
       fetchDashboard();
     } catch (err: any) {
       setError(err.message);
@@ -214,7 +247,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
     try {
       const res = await api.createWithdrawalRequest(withdrawalModal.id, withdrawAmount, claimCollateral);
       setSuccessMsg(res.message);
-      setWithdrawalModal(null);
+      closeDashboardModals();
       fetchDashboard();
     } catch (err: any) {
       setError(err.message);
@@ -242,27 +275,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
         description: editDesc,
       });
       setSuccessMsg(res.message);
-      setEditModal(null);
-      fetchDashboard();
-    } catch (err: any) {
-      setError(err.message);
-    }
-  };
-
-  const handleDelete = async (temkaId: string, status: string) => {
-    if (status === 'Active') {
-      setError('Удаление активных проектов запрещено правилами платформы!');
-      return;
-    }
-
-    if (!confirm('Вы уверены, что хотите безвозвратно удалить эту карточку из архива?')) {
-      return;
-    }
-
-    setError(null);
-    try {
-      const res = await api.deleteTemka(temkaId);
-      setSuccessMsg(res.message);
+      closeDashboardModals();
       fetchDashboard();
     } catch (err: any) {
       setError(err.message);
@@ -329,7 +342,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
             Кабинет автора @{currentUser.username}
           </h1>
           <p className="text-xs text-neutral-400 mt-1">
-            Администрирование пулов ликвидности, заявок на вывод и анализ рисков
+            Управление своими темками, заявками на вывод и историей баланса
           </p>
         </div>
 
@@ -441,7 +454,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm sm:text-base font-bold text-white uppercase tracking-wider font-mono">
-            Мои смарт-контракты ({myTemkas.length})
+            Мои темки ({myTemkas.length})
           </h2>
           <span className="text-xs text-neutral-400 font-mono">
             Активных: <strong className="text-amber-400">{metrics.activeCount}</strong>
@@ -483,9 +496,6 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                           }`}
                         >
                           {temka.status}
-                        </span>
-                        <span className="text-xs text-neutral-500 font-mono">
-                          ID: {temka.id}
                         </span>
                       </div>
                       <h3 className="text-base sm:text-lg font-bold text-white">{temka.title}</h3>
@@ -589,6 +599,28 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                         <Terminal className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                         <span className="truncate">Логи</span>
                       </button>
+
+                      {/* Clone Temka */}
+                      {onCloneTemka && (
+                        <button
+                          onClick={() =>
+                            onCloneTemka({
+                              title: `${temka.title} v2`,
+                              description: temka.description,
+                              algorithmCode: temka.algorithmCode || '',
+                              initialCapital: temka.initialCapital || 5000,
+                              collateral: temka.collateral > 0 ? temka.collateral : 3000,
+                              minBet: temka.minBet || 100,
+                              maxBet: temka.maxBet || 2000,
+                            })
+                          }
+                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-neutral-950 hover:bg-neutral-800 border border-neutral-700 text-neutral-300 hover:text-amber-300 text-xs font-medium rounded-xl transition-colors min-h-[36px] cursor-pointer"
+                          title="Создать новую темку на основе этой"
+                        >
+                          <Copy className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                          <span className="truncate">Клонировать</span>
+                        </button>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2 justify-end pt-1 sm:pt-0">
@@ -600,17 +632,6 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                         <Eye className="w-3.5 h-3.5" />
                         <span>Страница</span>
                       </button>
-
-                      {/* Manual Delete (Strictly Bankrupt / Closed) */}
-                      {isClosedOrBankrupt && (
-                        <button
-                          onClick={() => handleDelete(temka.id, temka.status)}
-                          title="Удалить карточку из базы данных"
-                          className="p-2 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 rounded-xl transition-colors min-h-[36px] min-w-[36px] flex items-center justify-center"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -630,7 +651,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
               <span>История баланса ({filteredHistory.length})</span>
             </h2>
             <p className="text-xs text-neutral-400 mt-0.5">
-              Переводы, пополнения через эквайринг, взносы в смарт-контракты и выплаты
+              Пополнения, переводы, ставки и выплаты по темкам
             </p>
           </div>
 
@@ -986,7 +1007,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                               {dateFormatted}
                             </span>
                             <span>•</span>
-                            <span className="text-neutral-400">Вклад в смарт-контракт</span>
+                            <span className="text-neutral-400">Ставка в темку</span>
                           </div>
                         </div>
                       </div>
@@ -1251,7 +1272,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                         {dateFormatted}
                       </span>
                       <span className="text-neutral-400 text-right truncate">
-                        {item.subtext || (isWithdraw ? 'Вывод капитала' : isCreate ? 'Создание темки' : 'Пополнение пула')}
+                        {item.subtext || (isWithdraw ? 'Вывод из темки' : isCreate ? 'Создание темки' : 'Пополнение темки')}
                       </span>
                     </div>
                   </div>
@@ -1318,10 +1339,10 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                       </div>
                       <div className="text-[10px] sm:text-[11px] text-neutral-500 font-mono mt-0.5">
                         {isWithdraw
-                          ? 'Вывод капитала'
+                          ? 'Вывод из темки'
                           : isCreate
                           ? 'Создание темки'
-                          : 'Пополнение пула'}
+                          : 'Пополнение темки'}
                       </div>
                     </div>
                   </div>
@@ -1354,7 +1375,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
       {topUpModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in">
           <div className="bg-neutral-900 border border-neutral-800 w-full max-w-md rounded-2xl p-6 shadow-2xl">
-            <h3 className="text-base font-bold text-white mb-1">Пополнение пула ликвидности</h3>
+            <h3 className="text-base font-bold text-white mb-1">Пополнить банк темки</h3>
             <p className="text-xs text-neutral-400 mb-4">{topUpModal.title}</p>
 
             <form onSubmit={handleTopUp} className="space-y-4">
@@ -1378,7 +1399,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setTopUpModal(null)}
+                  onClick={closeDashboardModals}
                   className="px-4 py-2 bg-neutral-800 text-neutral-300 text-xs rounded-xl"
                 >
                   Отмена
@@ -1387,7 +1408,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                   type="submit"
                   className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs rounded-xl"
                 >
-                  Пополнить пул
+                  Пополнить темку
                 </button>
               </div>
             </form>
@@ -1422,7 +1443,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
                   className="w-full bg-neutral-950 border border-neutral-700 rounded-xl p-3 text-white font-mono font-bold"
                 />
                 <span className="text-[11px] text-neutral-500 mt-1 block font-mono">
-                  Доступный капитал пула: {withdrawalModal.capital.toLocaleString()} ₽
+                  Доступно в банке темки: {withdrawalModal.capital.toLocaleString()} ₽
                 </span>
               </div>
 
@@ -1448,14 +1469,14 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
               </div>
 
               <div className="p-3 bg-amber-950/30 border border-amber-500/30 rounded-xl text-amber-200/90 text-[11px] leading-relaxed">
-                <strong>Правило валидации ТЗ:</strong> Заявка исполнится после 10 новых уникальных депозитов
-                или после 48 часов бездействия.
+                <strong>Условие вывода:</strong> Заявка сработает после 10 новых ставок
+                или через 48 часов.
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setWithdrawalModal(null)}
+                  onClick={closeDashboardModals}
                   className="px-4 py-2 bg-neutral-800 text-neutral-300 rounded-xl"
                 >
                   Отмена
@@ -1504,7 +1525,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setEditModal(null)}
+                  onClick={closeDashboardModals}
                   className="px-4 py-2 bg-neutral-800 text-neutral-300 rounded-xl"
                 >
                   Отмена
@@ -1527,7 +1548,7 @@ export const PrivateDashboard: React.FC<PrivateDashboardProps> = ({
           temkaId={activeLogsTemka.id}
           temkaTitle={activeLogsTemka.title}
           isOpen={true}
-          onClose={() => setActiveLogsTemka(null)}
+          onClose={closeDashboardModals}
         />
       )}
     </div>

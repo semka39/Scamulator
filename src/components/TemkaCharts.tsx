@@ -54,7 +54,7 @@ export const TemkaCharts: React.FC<TemkaChartsProps> = ({ temka, transactions })
 
   // Pie breakdown
   const pieData = [
-    { name: 'Капитал пула', value: Math.max(1, temka.capital), color: '#10b981' },
+    { name: 'Банк темки', value: Math.max(1, temka.capital), color: '#10b981' },
     { name: 'Залог автора', value: Math.max(1, temka.collateral), color: '#f59e0b' },
     { name: 'Выплачено игрокам', value: Math.max(1, temka.totalOut), color: '#6366f1' },
   ];
@@ -68,7 +68,7 @@ export const TemkaCharts: React.FC<TemkaChartsProps> = ({ temka, transactions })
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-amber-400" />
           <h3 className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-            Аналитика и графики смарт-контракта
+            Графики и статистика темки
           </h3>
         </div>
 
@@ -95,7 +95,7 @@ export const TemkaCharts: React.FC<TemkaChartsProps> = ({ temka, transactions })
             }`}
           >
             <BarChart3 className="w-3.5 h-3.5" />
-            <span className="truncate">Ликвидность</span>
+            <span className="truncate">Баланс</span>
           </button>
 
           <button

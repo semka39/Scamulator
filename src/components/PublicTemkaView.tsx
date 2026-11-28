@@ -51,6 +51,15 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
       canBet: boolean;
       hasUserDeposited: boolean;
       userStats: any;
+      myTransactions?: Array<{
+        id: string;
+        amount: number;
+        payout: number;
+        multiplier: number;
+        isDefault: boolean;
+        isRefund: boolean;
+        timestamp: string;
+      }>;
     };
   } | null>(null);
 
@@ -72,6 +81,33 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
     message: string;
     stdout?: string;
   } | null>(null);
+
+  // Support browser Back button when BetResultModal is open
+  useEffect(() => {
+    if (!isModalOpen) return;
+
+    window.history.pushState({ ...window.history.state, subModal: 'betResult' }, '');
+
+    const handlePopBetModal = () => {
+      setIsModalOpen(false);
+      setBetResult(null);
+      setModalError(null);
+    };
+
+    window.addEventListener('popstate', handlePopBetModal, { once: true });
+    return () => {
+      window.removeEventListener('popstate', handlePopBetModal);
+    };
+  }, [isModalOpen]);
+
+  const handleCloseBetModal = () => {
+    setIsModalOpen(false);
+    setBetResult(null);
+    setModalError(null);
+    if (window.history.state?.subModal === 'betResult') {
+      window.history.back();
+    }
+  };
 
   const fetchTemka = async () => {
     try {
@@ -197,7 +233,7 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
 
   const statusConfig = {
     Active: {
-      label: 'Активный смарт-контракт',
+      label: 'Активна',
       bg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
       dot: 'bg-emerald-400 animate-pulse',
     },
@@ -273,7 +309,7 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
         {/* Capital */}
         <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-3 sm:p-4 shadow-lg">
           <span className="text-[10px] uppercase font-mono text-neutral-500 tracking-wider block mb-1">
-            Пул ликвидности
+            Банк темки
           </span>
           <div className="flex items-center gap-1.5 text-sm sm:text-lg font-black font-mono text-emerald-400">
             <Coins className="w-4 h-4 shrink-0" />
@@ -354,9 +390,6 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
                   Сделать ставку
                 </h3>
               </div>
-              <span className="text-[11px] font-mono text-neutral-400">
-                Исполнение в Python 3.10
-              </span>
             </div>
 
             {/* OWNER LOCK */}
@@ -364,10 +397,10 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
               <div className="p-4 bg-amber-950/30 border border-amber-500/40 rounded-xl text-xs text-amber-200 space-y-2">
                 <div className="flex items-center gap-2 font-bold text-amber-300">
                   <Lock className="w-4 h-4 shrink-0 text-amber-400" />
-                  <span>БЛОКИРОВКА СОЗДАТЕЛЯ</span>
+                  <span>ВЫ АВТОР ЭТОЙ ТЕМКИ</span>
                 </div>
                 <p className="leading-relaxed text-amber-200/90">
-                  Вы являетесь автором этой темки. Согласно архитектуре платформы, автор не может совершать ставки в собственный смарт-контракт.
+                  Автор не может делать ставки в свою собственную темку.
                 </p>
               </div>
             ) : temka.status !== 'Active' ? (
@@ -377,7 +410,7 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
               </div>
             ) : !currentUser ? (
               <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-xl text-xs text-neutral-400 text-center">
-                Войдите в аккаунт, чтобы делать ставки в этот смарт-контракт.
+                Войдите в аккаунт, чтобы сделать ставку.
               </div>
             ) : (
               <form onSubmit={handleBet} className="space-y-4">
@@ -456,7 +489,7 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
           {/* 2. Description */}
           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 shadow-xl space-y-3">
             <h3 className="text-xs uppercase font-mono tracking-wider text-neutral-400">
-              Описание финансовой схемы
+              Описание темки
             </h3>
             <p className="text-sm text-neutral-300 leading-relaxed">{temka.description}</p>
 
@@ -477,8 +510,8 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
                 {showCode && (
                   <div className="mt-2.5 p-3 bg-neutral-950 border border-neutral-800 rounded-xl overflow-x-auto">
                     <div className="text-[11px] font-mono text-neutral-500 mb-1.5 pb-1 border-b border-neutral-900 flex items-center justify-between">
-                      <span>Python Smart Contract</span>
-                      <span className="text-amber-400/80">Private Source</span>
+                      <span>Код темки (Python)</span>
+                      <span className="text-amber-400/80">Видно только вам</span>
                     </div>
                     <pre className="text-xs font-mono text-neutral-300 leading-relaxed">
                       {temka.algorithmCode}
@@ -489,12 +522,91 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
             )}
           </div>
 
-          {/* 3. Liquidity Monitor & Withdrawal Queue */}
+          {/* 3. Withdrawal Queue */}
           <LiquidityMonitor
             activeWithdrawal={activeWithdrawal}
             pastWithdrawals={pastWithdrawals}
             capital={temka.capital}
           />
+
+          {/* 4. My Bets in This Temka (Left of K-Feed) */}
+          {!isOwner && (
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 shadow-xl space-y-3">
+              <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
+                <div className="flex items-center gap-2">
+                  <Coins className="w-4 h-4 text-amber-400" />
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono">
+                    Мои ставки здесь
+                  </h3>
+                </div>
+                {userContext.myTransactions && userContext.myTransactions.length > 0 && (
+                  <span className="text-[11px] font-mono text-neutral-400">
+                    Всего: {userContext.userStats?.depositsCount ?? userContext.myTransactions.length}
+                  </span>
+                )}
+              </div>
+
+              {!currentUser ? (
+                <p className="text-xs text-neutral-500">Войдите в аккаунт, чтобы видеть свою статистику по этой темке.</p>
+              ) : !userContext.myTransactions || userContext.myTransactions.length === 0 ? (
+                <p className="text-xs text-neutral-500">Вы ещё не делали ставок в эту темку.</p>
+              ) : (
+                <>
+                  {(() => {
+                    const totalBet = userContext.userStats?.totalBets ?? userContext.myTransactions.reduce((s, t) => s + t.amount, 0);
+                    const totalPayout = userContext.userStats?.totalPayouts ?? userContext.myTransactions.reduce((s, t) => s + t.payout, 0);
+                    const net = totalPayout - totalBet;
+                    return (
+                      <div className="grid grid-cols-3 gap-2 bg-neutral-950/70 border border-neutral-800/80 rounded-xl p-3 font-mono text-xs">
+                        <div>
+                          <span className="text-[10px] text-neutral-500 block">Поставлено</span>
+                          <span className="font-bold text-white">{totalBet.toLocaleString()} ₽</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-neutral-500 block">Получено</span>
+                          <span className="font-bold text-emerald-400">{totalPayout.toLocaleString()} ₽</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-neutral-500 block">Итог</span>
+                          <span className={`font-bold ${net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-neutral-300'}`}>
+                            {net > 0 ? `+${net.toLocaleString()}` : net.toLocaleString()} ₽
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                    {userContext.myTransactions.map((tx) => {
+                      const delta = tx.payout - tx.amount;
+                      return (
+                        <div
+                          key={tx.id}
+                          className="flex items-center justify-between text-xs font-mono bg-neutral-950/60 border border-neutral-800/70 rounded-lg px-3 py-2"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-neutral-300">{tx.amount.toLocaleString()} ₽</span>
+                            <span className="text-neutral-600">→</span>
+                            <span className={tx.payout >= tx.amount ? 'text-emerald-400 font-bold' : 'text-neutral-400'}>
+                              {tx.payout.toLocaleString()} ₽
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2.5">
+                            <span className={`text-[11px] font-bold ${delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-rose-400' : 'text-neutral-400'}`}>
+                              x{tx.multiplier}
+                            </span>
+                            <span className="text-[10px] text-neutral-500">
+                              {new Date(tx.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right Column (6 cols): Charts & Live Multipliers Feed */}
@@ -511,6 +623,8 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
       <div className="w-full pt-2">
         <ProofOfBetComments
           temkaId={temka.id}
+          temkaOwnerId={temka.ownerId}
+          isOwner={userContext.isOwner}
           comments={comments}
           currentUser={currentUser}
           hasUserDeposited={userContext.hasUserDeposited}
@@ -527,7 +641,7 @@ export const PublicTemkaView: React.FC<PublicTemkaViewProps> = ({
         betAmount={betAmount}
         result={betResult}
         error={modalError}
-        onClose={() => setIsModalOpen(false)}
+        onClose={handleCloseBetModal}
         onBetAgain={() => handleBet()}
       />
     </div>

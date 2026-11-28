@@ -12,6 +12,11 @@ import {
   SandboxLog,
   Transfer,
   Invoice,
+  PromoCode,
+  PromoActivation,
+  NotificationType,
+  NotificationSettings,
+  AppNotification,
   DatabaseSchema,
 } from './types.js';
 
@@ -39,7 +44,8 @@ function createDatabaseConnection(): DatabaseSync {
   try {
     const dbInstance = new DatabaseSync(DB_FILE);
     dbInstance.exec('PRAGMA foreign_keys = ON;');
-    dbInstance.exec('PRAGMA user_version;');
+    // PRAGMA user_version read (for future migrations, using prepare+get)
+    // const { user_version } = dbInstance.prepare('PRAGMA user_version').get() as any;
     return dbInstance;
   } catch (err) {
     console.warn('⚠️ SQLite database file was malformed or could not be opened. Resetting clean DB:', err);
@@ -198,6 +204,46 @@ function executeSchemaCreation() {
       credited INTEGER NOT NULL DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS promo_codes (
+      code TEXT PRIMARY KEY,
+      amount INTEGER NOT NULL,
+      maxActivations INTEGER NOT NULL,
+      usedCount INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS promo_activations (
+      id TEXT PRIMARY KEY,
+      promoCode TEXT NOT NULL,
+      userId TEXT NOT NULL,
+      username TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      activatedAt TEXT NOT NULL,
+      UNIQUE(promoCode, userId)
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      temkaId TEXT,
+      relatedUserId TEXT,
+      isRead INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_settings (
+      userId TEXT PRIMARY KEY,
+      new_bet INTEGER NOT NULL DEFAULT 1,
+      temka_bankrupt INTEGER NOT NULL DEFAULT 1,
+      temka_closed INTEGER NOT NULL DEFAULT 1,
+      withdrawal_executed INTEGER NOT NULL DEFAULT 1,
+      new_comment INTEGER NOT NULL DEFAULT 1,
+      transfer_received INTEGER NOT NULL DEFAULT 1
+    );
+
     -- Optimized query indexes
     CREATE INDEX IF NOT EXISTS idx_transactions_temkaId ON transactions(temkaId, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_transactions_userId ON transactions(userId, timestamp DESC);
@@ -210,7 +256,15 @@ function executeSchemaCreation() {
     CREATE INDEX IF NOT EXISTS idx_transfers_recipientId ON transfers(recipientId, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_temka_topups_ownerId ON temka_topups(ownerId, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_invoices_userId ON invoices(userId, createdAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_promo_activations_code ON promo_activations(promoCode);
+    CREATE INDEX IF NOT EXISTS idx_promo_activations_user ON promo_activations(userId, activatedAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_notifications_userId ON notifications(userId, createdAt DESC);
   `);
+
+  // Safe migration for existing DBs
+  try {
+    sqlite.exec(`ALTER TABLE notifications ADD COLUMN relatedUserId TEXT`);
+  } catch {}
 }
 
 // Ensure schema is prepared
@@ -333,6 +387,10 @@ export const db = {
       DELETE FROM transfers;
       DELETE FROM temka_topups;
       DELETE FROM invoices;
+      DELETE FROM promo_codes;
+      DELETE FROM promo_activations;
+      DELETE FROM notifications;
+      DELETE FROM notification_settings;
       VACUUM;
     `);
     // Clean up temka state directory
@@ -407,6 +465,12 @@ export const db = {
     const rows = sqlite.prepare(`
       SELECT * FROM transactions WHERE temkaId = ? ORDER BY timestamp DESC LIMIT ?
     `).all(temkaId, limit) as any[];
+    return rows.map(formatTransaction);
+  },
+  getTransactionsForTemkaByUser(temkaId: string, userId: string, limit: number = 30): Transaction[] {
+    const rows = sqlite.prepare(`
+      SELECT * FROM transactions WHERE temkaId = ? AND userId = ? ORDER BY timestamp DESC LIMIT ?
+    `).all(temkaId, userId, limit) as any[];
     return rows.map(formatTransaction);
   },
   getUserTransactions(userId: string, limit: number = 200): Transaction[] {
@@ -597,6 +661,272 @@ export const db = {
     `).all(userId, limit) as any[];
     return rows.map(formatInvoice);
   },
+
+  // Promo Codes
+  createPromoCode(code: string, amount: number, maxActivations: number): { success: boolean; promo?: PromoCode; error?: string } {
+    const cleanCode = (code || '').trim().toUpperCase();
+    if (!cleanCode || cleanCode.length < 2) {
+      return { success: false, error: 'Код промокода должен содержать не менее 2 символов' };
+    }
+    const cleanAmount = Math.floor(Number(amount));
+    if (isNaN(cleanAmount) || cleanAmount <= 0) {
+      return { success: false, error: 'Сумма бонуса промокода должна быть больше 0' };
+    }
+    const cleanMax = Math.floor(Number(maxActivations));
+    if (isNaN(cleanMax) || cleanMax <= 0) {
+      return { success: false, error: 'Количество активаций должно быть больше 0' };
+    }
+
+    const existing = db.getPromoCode(cleanCode);
+    if (existing) {
+      return { success: false, error: `Промокод "${cleanCode}" уже существует!` };
+    }
+
+    const promo: PromoCode = {
+      code: cleanCode,
+      amount: cleanAmount,
+      maxActivations: cleanMax,
+      usedCount: 0,
+      createdAt: new Date().toISOString(),
+    };
+
+    sqlite.prepare(`
+      INSERT INTO promo_codes (code, amount, maxActivations, usedCount, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(promo.code, promo.amount, promo.maxActivations, promo.usedCount, promo.createdAt);
+
+    return { success: true, promo };
+  },
+
+  getPromoCode(code: string): PromoCode | null {
+    const cleanCode = (code || '').trim().toUpperCase();
+    const row = sqlite.prepare('SELECT * FROM promo_codes WHERE code = ?').get(cleanCode) as any;
+    return row ? formatPromoCode(row) : null;
+  },
+
+  getAllPromoCodes(): PromoCode[] {
+    const rows = sqlite.prepare('SELECT * FROM promo_codes ORDER BY createdAt DESC').all() as any[];
+    return rows.map(formatPromoCode);
+  },
+
+  deletePromoCode(code: string): { success: boolean; error?: string } {
+    const cleanCode = (code || '').trim().toUpperCase();
+    const existing = db.getPromoCode(cleanCode);
+    if (!existing) {
+      return { success: false, error: `Промокод "${cleanCode}" не найден` };
+    }
+
+    withTransaction(() => {
+      sqlite.prepare('DELETE FROM promo_codes WHERE code = ?').run(cleanCode);
+      // Reset user activations as requested: if re-created, users can use it again
+      sqlite.prepare('DELETE FROM promo_activations WHERE promoCode = ?').run(cleanCode);
+    });
+
+    return { success: true };
+  },
+
+  hasUserActivatedPromo(code: string, userId: string): boolean {
+    const cleanCode = (code || '').trim().toUpperCase();
+    const row = sqlite.prepare('SELECT 1 FROM promo_activations WHERE promoCode = ? AND userId = ?').get(cleanCode, userId) as any;
+    return Boolean(row);
+  },
+
+  getUserPromoActivations(userId: string): PromoActivation[] {
+    const rows = sqlite.prepare('SELECT * FROM promo_activations WHERE userId = ? ORDER BY activatedAt DESC').all(userId) as any[];
+    return rows.map(formatPromoActivation);
+  },
+
+  applyPromoCode(code: string, userId: string): { success: boolean; amount?: number; newBalance?: number; error?: string } {
+    const cleanCode = (code || '').trim().toUpperCase();
+    if (!cleanCode) {
+      return { success: false, error: 'Введите промокод' };
+    }
+
+    const user = db.getUserById(userId);
+    if (!user) {
+      return { success: false, error: 'Пользователь не найден' };
+    }
+    if (user.isBanned) {
+      return { success: false, error: 'Аккаунт заблокирован' };
+    }
+
+    const promo = db.getPromoCode(cleanCode);
+    if (!promo) {
+      return { success: false, error: 'Промокод не найден или был удалён' };
+    }
+
+    if (db.hasUserActivatedPromo(cleanCode, userId)) {
+      return { success: false, error: 'Вы уже активировали этот промокод ранее' };
+    }
+
+    if (promo.usedCount >= promo.maxActivations) {
+      return { success: false, error: 'Лимит активаций этого промокода исчерпан' };
+    }
+
+    let updatedBalance = user.balance;
+
+    try {
+      withTransaction(() => {
+        const freshUser = db.getUserById(userId);
+        const freshPromo = db.getPromoCode(cleanCode);
+
+        if (!freshUser || !freshPromo) {
+          throw new Error('Данные промокода или пользователя изменились');
+        }
+
+        if (db.hasUserActivatedPromo(cleanCode, userId)) {
+          throw new Error('Вы уже активировали этот промокод');
+        }
+
+        if (freshPromo.usedCount >= freshPromo.maxActivations) {
+          throw new Error('Лимит активаций этого промокода исчерпан');
+        }
+
+        // Increment usage
+        sqlite.prepare('UPDATE promo_codes SET usedCount = usedCount + 1 WHERE code = ?').run(cleanCode);
+
+        // Record activation
+        const activationId = 'act_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        sqlite.prepare(`
+          INSERT INTO promo_activations (id, promoCode, userId, username, amount, activatedAt)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(activationId, cleanCode, freshUser.id, freshUser.username, freshPromo.amount, new Date().toISOString());
+
+        // Credit balance
+        freshUser.balance += freshPromo.amount;
+        db.updateUser(freshUser);
+        updatedBalance = freshUser.balance;
+      });
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Ошибка активации промокода' };
+    }
+
+    return {
+      success: true,
+      amount: promo.amount,
+      newBalance: updatedBalance,
+    };
+  },
+
+  // Notifications & Settings
+  getNotificationSettings(userId: string): NotificationSettings {
+    const row = sqlite.prepare('SELECT * FROM notification_settings WHERE userId = ?').get(userId) as any;
+    if (!row) {
+      return {
+        new_bet: true,
+        temka_bankrupt: true,
+        temka_closed: true,
+        withdrawal_executed: true,
+        new_comment: true,
+        transfer_received: true,
+      };
+    }
+    return {
+      new_bet: Boolean(row.new_bet),
+      temka_bankrupt: Boolean(row.temka_bankrupt),
+      temka_closed: Boolean(row.temka_closed),
+      withdrawal_executed: Boolean(row.withdrawal_executed),
+      new_comment: Boolean(row.new_comment),
+      transfer_received: Boolean(row.transfer_received),
+    };
+  },
+  updateNotificationSettings(userId: string, patch: Partial<NotificationSettings>): NotificationSettings {
+    const current = db.getNotificationSettings(userId);
+    const next: NotificationSettings = {
+      new_bet: patch.new_bet !== undefined ? Boolean(patch.new_bet) : current.new_bet,
+      temka_bankrupt: patch.temka_bankrupt !== undefined ? Boolean(patch.temka_bankrupt) : current.temka_bankrupt,
+      temka_closed: patch.temka_closed !== undefined ? Boolean(patch.temka_closed) : current.temka_closed,
+      withdrawal_executed: patch.withdrawal_executed !== undefined ? Boolean(patch.withdrawal_executed) : current.withdrawal_executed,
+      new_comment: patch.new_comment !== undefined ? Boolean(patch.new_comment) : current.new_comment,
+      transfer_received: patch.transfer_received !== undefined ? Boolean(patch.transfer_received) : current.transfer_received,
+    };
+    sqlite.prepare(`
+      INSERT INTO notification_settings (
+        userId, new_bet, temka_bankrupt, temka_closed, withdrawal_executed, new_comment, transfer_received
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(userId) DO UPDATE SET
+        new_bet = excluded.new_bet,
+        temka_bankrupt = excluded.temka_bankrupt,
+        temka_closed = excluded.temka_closed,
+        withdrawal_executed = excluded.withdrawal_executed,
+        new_comment = excluded.new_comment,
+        transfer_received = excluded.transfer_received
+    `).run(
+      userId,
+      next.new_bet ? 1 : 0,
+      next.temka_bankrupt ? 1 : 0,
+      next.temka_closed ? 1 : 0,
+      next.withdrawal_executed ? 1 : 0,
+      next.new_comment ? 1 : 0,
+      next.transfer_received ? 1 : 0
+    );
+    return next;
+  },
+  createNotification(
+    userId: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+    temkaId?: string,
+    relatedUserId?: string
+  ): AppNotification | null {
+    const settings = db.getNotificationSettings(userId);
+    if (!settings[type]) {
+      return null;
+    }
+    const notif: AppNotification = {
+      id: 'ntf_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      userId,
+      type,
+      title,
+      message,
+      temkaId,
+      relatedUserId,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+    };
+    sqlite.prepare(`
+      INSERT INTO notifications (id, userId, type, title, message, temkaId, relatedUserId, isRead, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+    `).run(notif.id, notif.userId, notif.type, notif.title, notif.message, notif.temkaId || null, notif.relatedUserId || null, notif.createdAt);
+    return notif;
+  },
+  getNotifications(userId: string, limit: number = 50): AppNotification[] {
+    const rows = sqlite.prepare(`
+      SELECT * FROM notifications WHERE userId = ? ORDER BY createdAt DESC LIMIT ?
+    `).all(userId, limit) as any[];
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.userId,
+      type: row.type as NotificationType,
+      title: row.title,
+      message: row.message,
+      temkaId: row.temkaId || undefined,
+      relatedUserId: row.relatedUserId || undefined,
+      isRead: Boolean(row.isRead),
+      createdAt: row.createdAt,
+    }));
+  },
+  getUnreadNotificationsCount(userId: string): number {
+    const row = sqlite.prepare(`
+      SELECT COUNT(*) as cnt FROM notifications WHERE userId = ? AND isRead = 0
+    `).get(userId) as any;
+    return Number(row?.cnt || 0);
+  },
+  markNotificationsRead(userId: string, notificationId?: string): void {
+    if (notificationId) {
+      sqlite.prepare('UPDATE notifications SET isRead = 1 WHERE id = ? AND userId = ?').run(notificationId, userId);
+    } else {
+      sqlite.prepare('UPDATE notifications SET isRead = 1 WHERE userId = ? AND isRead = 0').run(userId);
+    }
+  },
+  deleteNotification(userId: string, notificationId?: string): void {
+    if (notificationId) {
+      sqlite.prepare('DELETE FROM notifications WHERE id = ? AND userId = ?').run(notificationId, userId);
+    } else {
+      sqlite.prepare('DELETE FROM notifications WHERE userId = ?').run(userId);
+    }
+  },
 };
 
 // Formatting helpers
@@ -744,6 +1074,60 @@ function formatInvoice(row: any): Invoice {
     secondsLeft: row.secondsLeft || undefined,
     credited: Boolean(row.credited),
   };
+}
+
+function formatPromoCode(row: any): PromoCode {
+  return {
+    code: row.code,
+    amount: row.amount,
+    maxActivations: row.maxActivations,
+    usedCount: row.usedCount,
+    createdAt: row.createdAt,
+  };
+}
+
+function formatPromoActivation(row: any): PromoActivation {
+  return {
+    id: row.id,
+    promoCode: row.promoCode,
+    userId: row.userId,
+    username: row.username,
+    amount: row.amount,
+    activatedAt: row.activatedAt,
+  };
+}
+
+// ----------------------------------------------------
+// Transaction helper
+// ----------------------------------------------------
+
+export function withTransaction<T>(fn: () => T): T {
+  sqlite.exec('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    sqlite.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try { sqlite.exec('ROLLBACK'); } catch {}
+    throw err;
+  }
+}
+
+// Count temkas per owner in one SQL query (for leaderboard N+1 fix)
+export function getTemkaCountsByOwner(): Map<string, number> {
+  const rows = sqlite.prepare(
+    'SELECT ownerId, COUNT(*) as cnt FROM temkas GROUP BY ownerId'
+  ).all() as { ownerId: string; cnt: number }[];
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    map.set(r.ownerId, r.cnt);
+  }
+  return map;
+}
+
+// Hash password with SHA-256
+export function hashPassword(plain: string): string {
+  return crypto.createHash('sha256').update(plain).digest('hex');
 }
 
 // Calculation queries using native SQL aggregations for max speed

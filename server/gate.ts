@@ -274,7 +274,6 @@ export function renderCoffeeShopGateHtml(sitekey: string): string {
       margin-top: 16px;
       font-size: 13px;
       line-height: 1.4;
-      display: none;
       align-items: center;
       justify-content: center;
       gap: 10px;

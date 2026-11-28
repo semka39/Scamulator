@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sparkles, AlertTriangle, CheckCircle2, TrendingUp, TrendingDown, RefreshCw, X, ShieldAlert, ArrowRight } from 'lucide-react';
 
 interface BetResultModalProps {
@@ -28,6 +28,12 @@ export const BetResultModal: React.FC<BetResultModalProps> = ({
   onClose,
   onBetAgain,
 }) => {
+  const [isLogsExpanded, setIsLogsExpanded] = useState(false);
+
+  useEffect(() => {
+    setIsLogsExpanded(false);
+  }, [result, isLoading, isOpen]);
+
   if (!isOpen) return null;
 
   const isWin = result ? result.payout >= betAmount && !result.isRefund && !result.isDefault : false;
@@ -62,15 +68,11 @@ export const BetResultModal: React.FC<BetResultModalProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-bold text-white mb-1.5 font-mono">
-                Исполнение смарт-контракта...
+                Обработка ставки...
               </h3>
               <p className="text-xs text-neutral-400 max-w-xs mx-auto">
-                Алгоритм Python 3.10 обрабатывает депозит <strong className="text-amber-300">{betAmount.toLocaleString()} ₽</strong>
+                Считаем выплату для ставки <strong className="text-amber-300">{betAmount.toLocaleString()} ₽</strong>
               </p>
-            </div>
-            <div className="flex items-center justify-center gap-2 text-[11px] text-neutral-500 font-mono">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              Атомарная фиксация состояния
             </div>
           </div>
         )}
@@ -106,7 +108,7 @@ export const BetResultModal: React.FC<BetResultModalProps> = ({
               {result.isDefault ? (
                 <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-rose-500/20 border border-rose-500/40 rounded-full text-rose-400 text-xs font-bold font-mono mb-3">
                   <ShieldAlert className="w-4 h-4" />
-                  ДЕФОЛТ СМАРТ-КОНТРАКТА
+                  ТЕМКА ОБАНКРОЧЕНА
                 </div>
               ) : result.isRefund ? (
                 <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500/20 border border-amber-500/40 rounded-full text-amber-400 text-xs font-bold font-mono mb-3">
@@ -181,29 +183,74 @@ export const BetResultModal: React.FC<BetResultModalProps> = ({
               </div>
             </div>
 
-            {/* Execution logs / traces if present */}
-            {(result.stdout || result.stderr) && (
-              <details className="bg-neutral-950/80 border border-neutral-800 rounded-xl p-2.5 text-[11px] font-mono group">
-                <summary className="text-neutral-400 hover:text-amber-300 cursor-pointer select-none font-semibold flex items-center justify-between">
-                  <span>Журнал исполнения Python</span>
-                  <span className="text-[10px] text-neutral-500 group-open:rotate-180 transition-transform">▼</span>
-                </summary>
-                <div className="mt-2 pt-2 border-t border-neutral-800/80 space-y-1.5 max-h-36 overflow-y-auto">
-                  {result.stdout && (
-                    <div>
-                      <div className="text-[10px] text-neutral-500 uppercase">stdout:</div>
-                      <pre className="text-neutral-300 whitespace-pre-wrap">{result.stdout}</pre>
+            {/* Execution logs */}
+            {(() => {
+              const cleanStdout = (result.stdout || '').trim();
+              const cleanStderr = (result.stderr || '').trim();
+              const hasOutput = Boolean(cleanStdout || cleanStderr);
+
+              if (!hasOutput) {
+                return (
+                  <details className="bg-neutral-950/80 border border-neutral-800 rounded-xl p-2.5 text-[11px] font-mono group">
+                    <summary className="text-neutral-400 hover:text-amber-300 cursor-pointer select-none font-semibold flex items-center justify-between">
+                      <span>Логи кода</span>
+                      <span className="text-[10px] text-neutral-500 group-open:rotate-180 transition-transform">▼</span>
+                    </summary>
+                    <div className="mt-2 pt-2 border-t border-neutral-800/80 text-neutral-500 italic">
+                      (скрипт ничего не вывел)
                     </div>
-                  )}
-                  {result.stderr && (
-                    <div>
-                      <div className="text-[10px] text-rose-400 uppercase">stderr / trace:</div>
-                      <pre className="text-rose-300 whitespace-pre-wrap">{result.stderr}</pre>
-                    </div>
-                  )}
+                  </details>
+                );
+              }
+
+              const stdoutLines = cleanStdout ? cleanStdout.split(/\r?\n/) : [];
+              const stderrLines = cleanStderr ? cleanStderr.split(/\r?\n/) : [];
+              const totalLines = stdoutLines.length + stderrLines.length;
+              const canExpand = totalLines > 2;
+
+              const previewStdout = isLogsExpanded ? cleanStdout : stdoutLines.slice(0, 2).join('\n');
+              const remainingForStderr = Math.max(0, 2 - stdoutLines.length);
+              const previewStderr = isLogsExpanded
+                ? cleanStderr
+                : remainingForStderr > 0
+                ? stderrLines.slice(0, remainingForStderr).join('\n')
+                : '';
+
+              return (
+                <div className="bg-neutral-950/80 border border-neutral-800 rounded-xl p-2.5 text-[11px] font-mono space-y-1.5">
+                  <div className="flex items-center justify-between text-neutral-400 font-semibold">
+                    <span>Логи кода</span>
+                    {canExpand && (
+                      <button
+                        type="button"
+                        onClick={() => setIsLogsExpanded((v) => !v)}
+                        className="text-[10px] text-amber-400 hover:text-amber-300 cursor-pointer"
+                      >
+                        {isLogsExpanded ? 'Свернуть ▲' : `Развернуть (+${totalLines - 2} стр.) ▼`}
+                      </button>
+                    )}
+                  </div>
+                  <div className={`pt-1.5 border-t border-neutral-800/80 space-y-1.5 ${isLogsExpanded ? 'max-h-48 overflow-y-auto' : ''}`}>
+                    {previewStdout && (
+                      <pre className="text-neutral-300 whitespace-pre-wrap break-words">{previewStdout}</pre>
+                    )}
+                    {previewStderr && (
+                      <pre className="text-rose-300 whitespace-pre-wrap break-words">{previewStderr}</pre>
+                    )}
+                    {canExpand && !isLogsExpanded && (
+                      <button
+                        type="button"
+                        onClick={() => setIsLogsExpanded(true)}
+                        className="w-full h-2.5 flex items-center justify-center text-neutral-500 hover:text-amber-300 text-[11px] leading-none tracking-widest cursor-pointer select-none"
+                        title="Развернуть"
+                      >
+                        •••
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </details>
-            )}
+              );
+            })()}
 
             {/* Actions */}
             <div className="flex items-center gap-3 pt-2">
@@ -215,10 +262,7 @@ export const BetResultModal: React.FC<BetResultModalProps> = ({
               </button>
               {onBetAgain && !result.isDefault && (
                 <button
-                  onClick={() => {
-                    onClose();
-                    onBetAgain();
-                  }}
+                  onClick={onBetAgain}
                   className="flex-1 py-2.5 px-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5"
                 >
                   <span>Повторить</span>

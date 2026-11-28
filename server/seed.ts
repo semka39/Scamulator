@@ -1,4 +1,4 @@
-import { db, hashUserId } from './db.js';
+import { db, hashUserId, hashPassword } from './db.js';
 import { getTemkaStateDir } from './sandbox.js';
 import fs from 'fs';
 import path from 'path';
@@ -20,7 +20,7 @@ export function seedInitialData() {
     {
       id: 'usr_wolf',
       username: 'crypto_wolf',
-      passwordHash: 'wolf2026',
+      passwordHash: hashPassword('wolf2026'),
       balance: 75000,
       createdAt: new Date(now - 30 * d).toISOString(),
       avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=120&auto=format&fit=crop&q=80',
@@ -29,7 +29,7 @@ export function seedInitialData() {
     {
       id: 'usr_quant',
       username: 'smart_quant',
-      passwordHash: 'quant999',
+      passwordHash: hashPassword('quant999'),
       balance: 42000,
       createdAt: new Date(now - 45 * d).toISOString(),
       avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=120&auto=format&fit=crop&q=80',
@@ -38,7 +38,7 @@ export function seedInitialData() {
     {
       id: 'usr_degen',
       username: 'degen_trader',
-      passwordHash: 'degen123',
+      passwordHash: hashPassword('degen123'),
       balance: 18500,
       createdAt: new Date(now - 14 * d).toISOString(),
       avatarUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=120&auto=format&fit=crop&q=80',
@@ -47,7 +47,7 @@ export function seedInitialData() {
     {
       id: 'usr_scam',
       username: 'newbie_scammer',
-      passwordHash: 'scam404',
+      passwordHash: hashPassword('scam404'),
       balance: 9200,
       createdAt: new Date(now - 5 * d).toISOString(),
       avatarUrl: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=120&auto=format&fit=crop&q=80',
@@ -56,7 +56,7 @@ export function seedInitialData() {
     {
       id: 'usr_investor',
       username: 'investor_pro',
-      passwordHash: 'invest777',
+      passwordHash: hashPassword('invest777'),
       balance: 160000,
       createdAt: new Date(now - 60 * d).toISOString(),
       avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=120&auto=format&fit=crop&q=80',

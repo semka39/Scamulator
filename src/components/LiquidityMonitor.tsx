@@ -47,10 +47,9 @@ export const LiquidityMonitor: React.FC<LiquidityMonitorProps> = ({
         <div className="flex items-center gap-2">
           <Clock className="w-4 h-4 text-amber-400" />
           <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono">
-            Монитор ликвидности и Очередь вывода
+            Очередь вывода
           </h3>
         </div>
-        <span className="text-[11px] text-neutral-400 font-mono">48h / 10 Deposits Rule</span>
       </div>
 
       {/* Active Withdrawal Queue */}
@@ -64,7 +63,7 @@ export const LiquidityMonitor: React.FC<LiquidityMonitorProps> = ({
               </span>
             </div>
             <span className="text-xs font-mono font-bold text-white bg-neutral-950/80 px-2.5 py-1 rounded-lg border border-amber-500/30">
-              {activeWithdrawal.amount.toLocaleString()} ₽ ({withdrawalRatio}% пула)
+              {activeWithdrawal.amount.toLocaleString()} ₽ ({withdrawalRatio}% банка)
             </span>
           </div>
 
@@ -78,7 +77,7 @@ export const LiquidityMonitor: React.FC<LiquidityMonitorProps> = ({
           {/* Progress Bar of 10 deposits */}
           <div className="space-y-1.5 mb-3">
             <div className="flex items-center justify-between text-xs text-neutral-300">
-              <span>Счетчик депозитов до исполнения:</span>
+              <span>Новых ставок до вывода:</span>
               <strong className="font-mono text-amber-300">
                 {activeWithdrawal.depositsSinceRequest} / 10 (Осталось: {activeWithdrawal.depositsRemaining})
               </strong>
@@ -100,7 +99,7 @@ export const LiquidityMonitor: React.FC<LiquidityMonitorProps> = ({
       ) : (
         <div className="bg-neutral-950/60 border border-neutral-800/80 rounded-xl p-3.5 mb-4 text-xs text-neutral-400 flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>Активных заявок на вывод нет. Ликвидность стабильна.</span>
+          <span>Активных заявок на вывод нет — банк темки в безопасности.</span>
         </div>
       )}
 
